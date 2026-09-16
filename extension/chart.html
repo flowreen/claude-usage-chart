@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Weekly Usage</title>
+<link rel="icon" href="icons/icon32.png">
+<style>
+  /* dark only */
+  :root {
+    color-scheme: dark;
+    --bg: #1c1c1e; --fg: #ececec; --muted: #9a9a9a; --grid: #2e2e31; --axis: #555;
+    --dot: #7d98ff; --line: #4a5a8f; --ideal: #8a8a8a; --btn: #26262a; --btn-border: #444;
+    --bad: #ff7b6b; --gold: #ffc53d; --gold-glow: rgba(255, 197, 61, .5); --band: rgba(255, 197, 61, .12);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button, select { font: inherit; color: var(--fg); background: var(--btn); border: 1px solid var(--btn-border);
+                   border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  #rename-input { font: inherit; color: var(--fg); background: var(--btn); border: 1px solid var(--dot);
+                  border-radius: 8px; padding: 6px 12px; min-width: 260px; }
+  button[aria-pressed="true"] { border-color: var(--dot); box-shadow: inset 0 0 0 1px var(--dot); }
+  .top { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 8px; }
+  .charts { display: flex; flex-wrap: wrap; justify-content: center; }
+  .panel { flex: 1 1 420px; max-width: 780px; min-width: 0; padding: 0 8px; text-align: center; position: relative; }
+  .tip { display: none; position: absolute; pointer-events: none; text-align: left; white-space: nowrap;
+         background: var(--bg); border: 1px solid var(--btn-border); border-radius: 8px; padding: 6px 10px;
+         box-shadow: 0 2px 8px rgba(0,0,0,.25); font-size: 13px; }
+  .tip b { display: block; font-size: 18px; }
+  .tip span { display: block; color: var(--muted); }
+  .panel + .panel { border-left: 1px solid var(--grid); }
+  .panel h2 { font-size: 18px; margin: 12px 0 4px; }
+  /* frontier model (Fable): magenta series, gradient title, tag */
+  .model-frontier { --dot: #ff5cbc; --line: #8a3d6c; }
+  .model-frontier .model-name { background: linear-gradient(90deg, #ff5cbc, #ff9a52); -webkit-background-clip: text;
+                                background-clip: text; color: transparent; }
+  .frontier-tag { font-size: 10px; font-weight: 700; letter-spacing: .12em; color: #fff; vertical-align: middle;
+                  padding: 2px 7px; border-radius: 999px; background: linear-gradient(90deg, #d4238f, #f06a2c); }
+  .pace { font-size: 20px; margin: 4px 0 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { fill: var(--muted); font-size: 13px; }
+  .bottom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; margin-top: 16px; }
+  .status.bad { color: var(--bad); }
+  .empty { color: var(--muted); text-align: center; padding: 48px 0; }
+  @media (max-width: 900px) { .panel + .panel { border-left: 0; border-top: 1px solid var(--grid); } }
+
+  /* zone band, dots, projection */
+  .zone-band { fill: var(--band); stroke: var(--gold); stroke-opacity: .35; stroke-width: 1; }
+  .dot-under { fill: var(--dot); }
+  .dot-zone { fill: var(--gold); }
+  .dot-over { fill: var(--bad); }
+  .anchor { fill: var(--bg); stroke: var(--dot); stroke-width: 3; }
+  .gap { stroke: var(--line); stroke-width: 2; stroke-dasharray: 10 7; }
+  .proj { stroke-width: 2.5; stroke-dasharray: 1 7; stroke-linecap: round; }
+  .proj-ok { stroke: var(--dot); }
+  .proj-goal { stroke: var(--gold); }  .finish { fill: var(--band); }
+  svg text.finish-label { fill: var(--gold); font-size: 12px; font-weight: 600; }
+  .pace-early { color: var(--fg); }
+  .proj-over { stroke: var(--bad); }
+  .proj-end { fill: none; stroke: var(--muted); stroke-width: 2; }
+  .now { stroke: var(--bg); stroke-width: 2.5; }
+  .now-zone { fill: var(--gold); filter: drop-shadow(0 0 6px var(--gold-glow)); }
+  .now-under { fill: var(--dot); }
+  .now-over { fill: var(--bad); }
+  .pulse { fill: none; stroke-width: 3; transform-box: fill-box; transform-origin: center;
+           animation: pulse 1.8s ease-out infinite; }
+  .pulse-zone { stroke: var(--gold); animation-duration: 1.2s; }
+  .pulse-under { stroke: var(--dot); }
+  .pulse-over { stroke: var(--bad); }
+  @keyframes pulse { from { transform: scale(1); opacity: .9; } to { transform: scale(3.2); opacity: 0; } }
+
+  /* pace, streak, projection text */
+  .pace-zone { color: var(--gold); font-weight: 700; }
+  .pace-over { color: var(--bad); }
+  .zone-tag { font-size: 12px; letter-spacing: .08em; vertical-align: middle; padding: 2px 8px; border-radius: 999px;
+              border: 1px solid currentColor; opacity: .8; }
+  .pace-zone .zone-tag { background: var(--gold); color: var(--bg); border-color: var(--gold); opacity: 1;
+                         animation: shine 2.4s ease-in-out infinite; }
+  @keyframes shine { 50% { box-shadow: 0 0 14px var(--gold-glow); } }
+  .stats { font-size: 14px; margin: 4px 0; }
+  .streak-on { color: var(--gold); font-weight: 600; }
+  .loss { color: var(--muted); }
+  .warn { color: var(--bad); font-weight: 600; }
+  .panel.in-zone { box-shadow: inset 0 0 40px -18px var(--gold-glow); border-radius: 12px; }
+
+  /* rank chip, styled as gacha rarity: S legendary, A epic, B rare, C uncommon, D common */
+  .grade { position: relative; overflow: hidden; display: inline-block; min-width: 1.6em; padding: 0 6px; text-align: center;
+           border-radius: 6px; font-weight: 800; color: #fff; vertical-align: middle; text-shadow: 0 1px 1px rgba(0,0,0,.25);
+           animation: pop .45s cubic-bezier(.2, 1.6, .4, 1); }
+  .grade-hint { font-size: 12px; font-weight: 400; color: var(--muted); margin-right: 4px; vertical-align: middle; }
+  .grade-S { background: linear-gradient(135deg, #ffe27a, #f5a300 55%, #d97a00);
+             animation: pop .45s cubic-bezier(.2, 1.6, .4, 1), glow-gold 2s ease-in-out infinite; }
+  .grade-A { background: linear-gradient(135deg, #e0a8ff, #a24df2 50%, #6a1bb8);
+             animation: pop .45s cubic-bezier(.2, 1.6, .4, 1), glow-epic 2.4s ease-in-out infinite; }
+  .grade-B { background: linear-gradient(135deg, #7cc0ff, #2f7cf6 60%, #1d5bd8); box-shadow: 0 0 8px rgba(47, 124, 246, .45); }
+  .grade-C { background: linear-gradient(135deg, #6ee48f, #22a24a); }
+  .grade-D { background: linear-gradient(135deg, #c3c8d0, #8b929c); }
+  /* shine sweep across the two top tiers */
+  .grade-S::after, .grade-A::after { content: ''; position: absolute; top: 0; bottom: 0; left: -60%; width: 40%;
+    background: linear-gradient(100deg, transparent, rgba(255,255,255,.65), transparent);
+    transform: skewX(-20deg); animation: shine-sweep 2.6s ease-in-out infinite 0.5s; }
+  .grade-A::after { animation-duration: 3.2s; }
+  @keyframes pop { from { transform: scale(.3); opacity: 0; } }
+  @keyframes glow-gold { 0%, 100% { box-shadow: 0 0 8px rgba(245, 163, 0, .5); } 50% { box-shadow: 0 0 18px rgba(255, 200, 40, .9); } }
+  @keyframes glow-epic { 0%, 100% { box-shadow: 0 0 8px rgba(162, 77, 242, .5); } 50% { box-shadow: 0 0 18px rgba(190, 110, 255, .9); } }
+  @keyframes shine-sweep { 0% { left: -60%; } 45%, 100% { left: 130%; } }
+  .tip .tip-zone { color: var(--gold); }
+  .tip .tip-over { color: var(--bad); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse { display: none; }
+    .grade, .grade-S, .grade-A, .pace-zone .zone-tag { animation: none; }
+    .grade-S::after, .grade-A::after { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="top">
+    <select id="account" title="Account" hidden></select>
+    <input id="rename-input" type="text" maxlength="60" placeholder="Account name (empty = default)" hidden>
+    <button id="rename" title="Rename this account" hidden>✎ Rename</button>
+    <select id="week" title="Period"></select>
+    <select id="view" title="Zoom">
+      <option value="full">Full period</option>
+      <option value="fit">Fit data</option>
+    </select>
+  </div>
+  <div class="charts" id="charts"></div>
+  <div class="bottom">
+    <button id="markers" aria-pressed="false">All markers</button>
+    <button id="export">Export JSON</button>
+    <button id="import">Import</button>
+    <button id="pollnow">Poll now</button>
+    <input id="file" type="file" accept="application/json,.json" hidden>
+    <span class="sub" id="count"></span>
+    <span class="sub status" id="status"></span>
+  </div>
+  <script src="pace.js"></script>
+  <script src="chart.js"></script>
+</body>
+</html>
