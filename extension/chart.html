@@ -31,12 +31,13 @@
   .tip span { display: block; color: var(--muted); }
   .panel + .panel { border-left: 1px solid var(--grid); }
   .panel h2 { font-size: 18px; margin: 12px 0 4px; }
-  /* frontier model (Fable): magenta series, gradient title, tag */
-  .model-frontier { --dot: #ff5cbc; --line: #8a3d6c; }
-  .model-frontier .model-name { background: linear-gradient(90deg, #ff5cbc, #ff9a52); -webkit-background-clip: text;
+  /* frontier model (Fable): violet series, gradient title, tag. Only the identity colour changes per model;
+     gold (zone) and red (over) mean the same on every chart, so the identity must stay far from both. */
+  .model-frontier { --dot: #b48cff; --line: #6a4fb0; }
+  .model-frontier .model-name { background: linear-gradient(90deg, #b48cff, #ff5cbc); -webkit-background-clip: text;
                                 background-clip: text; color: transparent; }
   .frontier-tag { font-size: 10px; font-weight: 700; letter-spacing: .12em; color: #fff; vertical-align: middle;
-                  padding: 2px 7px; border-radius: 999px; background: linear-gradient(90deg, #d4238f, #f06a2c); }
+                  padding: 2px 7px; border-radius: 999px; background: linear-gradient(90deg, #7c3aed, #d4238f); }
   .pace { font-size: 20px; margin: 4px 0 0; }
   .sub { color: var(--muted); font-size: 13px; }
   svg { width: 100%; height: auto; display: block; }

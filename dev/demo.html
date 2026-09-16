@@ -44,6 +44,42 @@
     points.push({ t: Date.now(), org: 'org-a', key: 'All models', pct: 41, reset },
                 { t: Date.now(), org: 'org-a', key: 'Fable', pct: 63, reset });
   }
+  // ?scenario=s | a | monthly: the README pictures. s = a finished week that wandered under, over and back into
+  // the zone (every dot colour) and hit 100% on the finish day; a = a finished week that hit 100% almost two days
+  // early; monthly = a live Enterprise month.
+  const scenario = new URLSearchParams(location.search).get('scenario');
+  if (scenario === 's' || scenario === 'a') {
+    points.length = 0;
+    const end = Date.now() - 2 * 864e5, start = end - 7 * 864e5;
+    // wave amplitude * 2pi / period must stay below 100 so usage never goes down; finish() ramps into 100% instead
+    // of jumping there.
+    const wave = (f, at, period, amp) => amp * Math.sin((f - at) * 2 * Math.PI / period);
+    const finish = (f, base, from, to) => (f >= to ? 100 : f <= from ? base : base + (100 - base) * ((f - from) / (to - from)) ** 2);
+    const curve = {
+      s: { 'All models': f => finish(f, 100 * f + wave(f, 0.15, 0.7, 10), 0.8, 0.955),
+           Fable: f => finish(f, 100 * f + wave(f, 0.5, 0.6, 8) - 1, 0.82, 0.965) },
+      a: { 'All models': f => Math.min(100, 100 * f * 1.32 + 6 * Math.sin(f * 5)),
+           Fable: f => Math.min(100, 100 * f * 1.45) },
+    }[scenario];
+    for (const [key, fn] of Object.entries(curve)) {
+      for (let t = start + 2 * H; t < end - 0.5 * H; t += 2 * H) {
+        const f = (t - start) / (end - start);
+        const pct = Math.round(Math.min(100, Math.max(0, fn(f))) * 10) / 10;
+        points.push({ t, org: 'org-a', key, pct, reset: end });
+      }
+    }
+  }
+  if (scenario === 'monthly') {
+    points.length = 0;
+    const mStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+    const mEnd = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+    for (let t = mStart + 5 * H; t < Date.now(); t += 6 * H) {
+      const f = (t - mStart) / (mEnd - mStart);
+      const pct = Math.round(Math.max(0, 100 * f + 3 * Math.sin(f * 9) - 1) * 10) / 10;
+      points.push({ t, org: 'org-c', key: 'Monthly spend', pct, reset: mEnd, start: mStart,
+                    used: Math.round(pct * 5 * 100) / 100, limit: 500, currency: 'USD' });
+    }
+  }
   const store = { points, orgNames: { 'org-a': "florin@example.com's Organization", 'org-b': 'Personal', 'org-c': 'Acme Corp' },
                   orgUsers: { 'org-a': 'Florin', 'org-c': 'Florin' },
                   orgPlans: { 'org-a': 'Max 20x', 'org-b': 'Pro', 'org-c': 'Enterprise' },
