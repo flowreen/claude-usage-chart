@@ -10,7 +10,7 @@ const listeners = {};
 const ev = name => ({ addListener: fn => { listeners[name] = fn; } });
 let usageFail = new Set();
 let accountFails = false;
-let orgAPct = 44;
+let orgAPct = 30; // 27 under the ideal, outside the 21.4 point zone
 let orgADays = 3;
 const badge = {};
 
@@ -112,7 +112,7 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   store.selectedOrg = 'org-a';
   await listeners.changed({ selectedOrg: { newValue: 'org-a' } });
   await new Promise(r => setTimeout(r, 10));
-  assert.strictEqual(badge.text, '-13%');
+  assert.strictEqual(badge.text, '-27%');
   assert.strictEqual(badge.color, '#3553b5');
 
   // one point per minute per series, driven by a fake clock inside background.js
@@ -147,7 +147,7 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert.strictEqual(badge.color, '#d99a00', `badge ${badge.text} ${badge.color} ${badge.title}`);
   assert(/in the zone/.test(badge.title), badge.title);
   orgADays = 3;
-  orgAPct = 44;
+  orgAPct = 30;
   vm.runInContext('Date.now = globalThis.__realNow', ctx);
 
   // one org failing keeps the other's point and reports the error

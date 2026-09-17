@@ -3,7 +3,7 @@
 // monthly spend limits pass the month start explicitly.
 const PACE_WEEK = 7 * 864e5;
 const PACE_HOUR = 36e5;
-const PACE_ZONE = 5; // percentage points either side of the ideal line count as "in the zone"
+const PACE_ZONE_MS = 36 * PACE_HOUR; // this much ideal pace either side of the line counts as "in the zone"
 const PACE_FINAL_DAY = 24 * PACE_HOUR;
 const clampPct = v => Math.min(100, Math.max(0, v));
 
@@ -15,8 +15,14 @@ function deviation(p, end, start) {
   return p.pct - idealAt(p.t, end, start);
 }
 
-function zoneOf(d) {
-  return Math.abs(d) <= PACE_ZONE ? 'zone' : d > 0 ? 'over' : 'under';
+// Half height of the zone in percentage points. It is a time, so a day and a half without use starting on the
+// line stays in the zone on every period: 21.4 points on a week, about 5 on a month.
+function zonePts(end, start = end - PACE_WEEK) {
+  return PACE_ZONE_MS / (end - start) * 100;
+}
+
+function zoneOf(d, z) {
+  return Math.abs(d) <= z ? 'zone' : d > 0 ? 'over' : 'under';
 }
 
 // The window where reaching 100% earns the top rank. Always a full 24 h: a reset at 00:20 must not leave
@@ -37,11 +43,13 @@ function finishWindow(end, start = end - PACE_WEEK) {
 
 // Zone of a sample. Nothing used yet never counts as in the zone, or every period would start with a free streak.
 // At 100% inside the finish window the goal is reached, so it is not "over" even though the line is below 100.
+// At 100% before it the limit blocks use, so it is "over" even where the zone reaches up to 100.
 function sampleZone(p, end, start) {
   if (p.pct <= 0) return 'under';
   const fin = finishWindow(end, start);
   if (p.pct >= 100 && p.t >= fin.start && p.t <= fin.end) return 'zone';
-  return zoneOf(deviation(p, end, start));
+  if (p.pct >= 100 && p.t < fin.start) return 'over';
+  return zoneOf(deviation(p, end, start), zonePts(end, start));
 }
 
 // Longest and current run of consecutive in-zone samples, in ms. pts sorted by t.
@@ -112,6 +120,6 @@ function formatMoney(v, currency = 'USD') {
 const periodStart = p => (Number.isFinite(p.start) ? p.start : p.reset - PACE_WEEK);
 
 if (typeof module !== 'undefined') {
-  module.exports = { PACE_WEEK, PACE_HOUR, PACE_ZONE, PACE_FINAL_DAY, idealAt, deviation, zoneOf, finishWindow, sampleZone,
+  module.exports = { PACE_WEEK, PACE_HOUR, PACE_ZONE_MS, PACE_FINAL_DAY, idealAt, deviation, zonePts, zoneOf, finishWindow, sampleZone,
                      streaks, projection, weekResult, periodStart, formatMoney };
 }

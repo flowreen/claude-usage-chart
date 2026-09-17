@@ -8,22 +8,31 @@ const near = (a, b, eps = 1e-6) => assert(Math.abs(a - b) < eps, `${a} != ${b}`)
 
 // ideal line: half the week = 50%
 near(P.idealAt(start + 84 * H, end), 50);
-assert.strictEqual(P.zoneOf(4.9), 'zone');
-assert.strictEqual(P.zoneOf(-5), 'zone');
-assert.strictEqual(P.zoneOf(-5.1), 'under');
-assert.strictEqual(P.zoneOf(6), 'over');
+// zone: 36 h of pace either side of the line, 21.4 points on a week and about 5 on a month
+const Z = P.zonePts(end);
+near(Z, 36 / 168 * 100);
+near(P.zonePts(Date.UTC(2026, 5, 1), Date.UTC(2026, 4, 1)), 36 / (31 * 24) * 100);
+assert.strictEqual(P.zoneOf(21, Z), 'zone');
+assert.strictEqual(P.zoneOf(-Z, Z), 'zone');
+assert.strictEqual(P.zoneOf(-21.5, Z), 'under');
+assert.strictEqual(P.zoneOf(22, Z), 'over');
+// on the line at 84h, then no use: still in the zone 35 h later, out after two days
+assert.strictEqual(P.sampleZone(at(84 + 35, 50), end), 'zone');
+assert.strictEqual(P.sampleZone(at(84 + 48, 50), end), 'under');
 
 // streaks: in zone at 84h and 90h, out at 96h, back in at 102h and 114h
-const s = P.streaks([at(84, 50), at(90, 54), at(96, 40), at(102, 60), at(114, 67)], end);
+const s = P.streaks([at(84, 50), at(90, 54), at(96, 30), at(102, 60), at(114, 67)], end);
 assert.strictEqual(s.best, 12 * H);
 assert.strictEqual(s.current, 12 * H);
 assert.strictEqual(P.streaks([at(84, 50), at(96, 20)], end).current, null);
-// 0% at the week start is within 5 pts of the line but is not a streak
+// 0% at the week start is inside the band but is not a streak
 assert.strictEqual(P.sampleZone(at(2, 0), end), 'under');
 assert.strictEqual(P.streaks([at(1, 0), at(6, 0), at(12, 0)], end).best, 0);
 // 100% on the final day is the goal, not "over"; 100% two days early is over
 assert.strictEqual(P.sampleZone(at(150, 100), end), 'zone');
 assert.strictEqual(P.sampleZone(at(120, 100), end), 'over');
+// 100% 33 h before the reset sits inside the band (19.6 over) but the limit blocks use: over
+assert.strictEqual(P.sampleZone(at(135, 100), end), 'over');
 
 // projection: steady 1%/h over the last day, 84h left after 84h at 50% => lands at 134, hits 100 after 50 more hours
 const pts = [];

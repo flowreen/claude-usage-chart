@@ -4,17 +4,17 @@ Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every 10 minute
 
 ## What it looks like
 
-**Rank S: the ideal week.** Usage drifts under the dashed ideal line (blue dots, violet on Fable), overshoots it (red), comes back within 5 points of it (gold, "in the zone") and reaches 100% on the finish day, the last 24 hours before the reset. Nothing left unused, nothing blocked early.
+**Rank S: the ideal week.** The flat stretches are the hours away from work. Usage drifts under the dashed ideal line (blue dots, violet on Fable), overshoots it (red), comes back within a day and a half of pace of it (gold, "in the zone": 21 points on a week) and reaches 100% on the finish day, the last 24 hours before the reset. Nothing left unused, nothing blocked early.
 
 ![Rank S: usage wanders under, over and back into the zone, then hits 100% on the finish day](docs/rank-s.png)
 
-**Rank A: ran out early.** Usage climbs faster than the line (red dots) and hits 100% 34 hours before the reset, so the limit blocks the last day. Each day early costs one rank: A, then B (the Fable chart here), then C.
+**Rank A: ran out early.** Usage climbs faster than the line (red dots) and hits 100% 40 hours before the reset, so the limit blocks the last day. Each day early costs one rank: A, then B (the Fable chart here), then C.
 
 ![Rank A: 100% reached a day and a half before the reset](docs/rank-a.png)
 
 **Monthly spend limit.** Seats with only a monthly $ cap (Enterprise) get one chart in money instead of percent. The period is the calendar month and the finish window is its last working day. Live periods show the pace, the current streak and where the spend is projected to land at the reset.
 
-![Monthly spend: $242 of $500 in the zone, projected $470 at reset](docs/monthly.png)
+![Monthly spend: $247 of $500 in the zone, projected $467 at reset](docs/monthly.png)
 
 Screenshots come from `dev/demo.html?scenario=s`, `?scenario=a` and `?scenario=monthly`, rendered with synthetic data.
 

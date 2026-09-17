@@ -1,4 +1,5 @@
 const HOUR = 36e5;
+const UNUSED_WARN = 5; // projected % left unused at the reset above which the line turns red
 const NS = 'http://www.w3.org/2000/svg';
 // orgNames, orgPlans and orgUsers (the signed-in person's name) come from claude.ai; orgAliases are names the
 // user typed and win over everything.
@@ -194,7 +195,7 @@ function panel(name, pts, end, start) {
   el('text', { class: 'finish-label', x: (fx + X(fin.end)) / 2, y: H - B - 10, 'text-anchor': money ? 'end' : 'middle' }, g)
     .textContent = `🏁 ${finName}`;
   if (money) g.lastChild.setAttribute('x', X(fin.end) - 4); // a one-day column in a month is narrow
-  const Z = PACE_ZONE;
+  const Z = zonePts(end, start);
   el('polygon', { class: 'zone-band', points: [[start, -Z], [end, 100 - Z], [end, 100 + Z], [start, Z]]
     .map(([t, v]) => `${X(t)},${Y(v)}`).join(' ') }, g);
   el('line', { x1: X(start), y1: Y(0), x2: X(end), y2: Y(100), stroke: 'var(--ideal)',
@@ -296,7 +297,7 @@ function panel(name, pts, end, start) {
     line1.textContent = st.current < HOUR ? `🔥 In the zone: streak starts now${best}` : `🔥 ${fmtDur(st.current)} in the zone${best}`;
   } else {
     line1.textContent = (st.best >= HOUR ? `best streak ${fmtDur(st.best)}` : 'no streak yet')
-      + (live ? ` · get within ${PACE_ZONE}% of the line to start one` : '');
+      + (live ? ` · get within ${Math.round(zonePts(end, start))}% of the line to start one` : '');
   }
   if (st.current !== null && live) line1.className = 'streak-on';
   stats.appendChild(line1);
@@ -314,7 +315,7 @@ function panel(name, pts, end, start) {
     } else {
       const left = 100 - Math.min(100, proj.projected);
       line2.textContent = `Projected ${amount(Math.min(100, proj.projected))} at reset · ${amount(left)} left unused`;
-      if (left > PACE_ZONE) line2.className = 'loss';
+      if (left > UNUSED_WARN) line2.className = 'loss';
     }
     stats.appendChild(line2);
   }
