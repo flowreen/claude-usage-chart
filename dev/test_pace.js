@@ -31,8 +31,8 @@ assert.strictEqual(P.streaks([at(1, 0), at(6, 0), at(12, 0)], end).best, 0);
 // 100% on the final day is the goal, not "over"; 100% two days early is over
 assert.strictEqual(P.sampleZone(at(150, 100), end), 'zone');
 assert.strictEqual(P.sampleZone(at(120, 100), end), 'over');
-// 100% 33 h before the reset sits inside the band (19.6 over) but the limit blocks use: over
-assert.strictEqual(P.sampleZone(at(135, 100), end), 'over');
+// 100% 33 h before the reset sits inside the band: a valid finish, no night shift needed
+assert.strictEqual(P.sampleZone(at(135, 100), end), 'zone');
 
 // projection: steady 1%/h over the last day, 84h left after 84h at 50% => lands at 134, hits 100 after 50 more hours
 const pts = [];
@@ -42,29 +42,36 @@ near(pr.rate * H, 1);
 near(pr.projected, 134);
 near(pr.hitAt, start + 134 * H);
 
-// grades: 100% anywhere on the final day is S, whether 23 h or 10 min before the reset
+// grades: 100% anywhere in the finish window (the last 36 h, where the zone band reaches 100%) is S
 const done = hitHour => P.weekResult([at(84, 50), at(hitHour, 100), at(167.9, 100)], end, end + H);
 assert.strictEqual(done(145).grade, 'S');      // 23h before reset
 assert.strictEqual(done(167.8).grade, 'S');    // 12 min before reset
-assert.strictEqual(done(144).grade, 'S');      // exactly 24h
-assert.strictEqual(done(143).grade, 'A');      // 25h
-assert.strictEqual(done(120).grade, 'A');      // 48h
-assert.strictEqual(done(119).grade, 'B');      // 49h
-assert.strictEqual(done(97).grade, 'B');       // 71h
-assert.strictEqual(done(95).grade, 'C');       // 73h
-assert.strictEqual(done(40).grade, 'C');
-assert.strictEqual(done(145).onFinalDay, true);
-assert.strictEqual(done(143).onFinalDay, false);
-// never reached 100%: by final usage, and 99% is below any week that reached 100%
+assert.strictEqual(done(143).grade, 'S');      // 25h
+assert.strictEqual(done(132).grade, 'S');      // exactly 36h
+assert.strictEqual(P.sampleZone(at(133, 100), end), 'zone', '100% inside the band is gold');
+assert.strictEqual(P.sampleZone(at(131, 100), end), 'over');
+// blocked before the finish window: score = 100 - half the blocked share of the week, and never S
+assert.strictEqual(done(131).grade, 'A');      // 37h: blocked 1h
+near(done(131).score, 100 - 0.5 * 100 / 168);
+assert.strictEqual(done(120).grade, 'A');      // 48h: blocked 12h, score 96.4 but blocked
+assert.strictEqual(done(99).grade, 'A');       // 69h: blocked 33h, score 90.2
+assert.strictEqual(done(98).grade, 'B');       // 70h: blocked 34h, score 89.9
+assert.strictEqual(done(40).grade, 'C');       // blocked 92h, score 72.6
+assert.strictEqual(done(143).onFinalDay, true);
+assert.strictEqual(done(131).onFinalDay, false);
+// never reached 100%: by final usage, 95%+ is S
 const ended = pct => P.weekResult([at(84, 40), at(167, pct)], end, end + H).grade;
-assert.strictEqual(ended(99), 'A');
+assert.strictEqual(ended(99), 'S');
+assert.strictEqual(ended(95), 'S');
+assert.strictEqual(ended(94), 'A');
+assert.strictEqual(ended(90), 'A');
 assert.strictEqual(ended(80), 'B');
 assert.strictEqual(ended(60), 'C');
 assert.strictEqual(ended(20), 'D');
-// live week: projection 1%/h from 50% at 84h reaches 100% at 134h, 34h before reset => A
+// live week: projection 1%/h from 50% at 84h reaches 100% at 134h, 34h before reset, inside the band => S
 const live = P.weekResult(pts, end, start + 84 * H);
 assert.strictEqual(live.live, true);
-assert.strictEqual(live.grade, 'A');
+assert.strictEqual(live.grade, 'S');
 
 // monthly period: UTC calendar month like the product. Run this file under several TZ values.
 // May 2026: May 31 is a Sunday, so the last working day is Friday May 29, covered in local time.
@@ -73,17 +80,17 @@ const local = (d, h = 12) => new Date(2026, 4, d, h).getTime();
 const fin = P.finishWindow(mEnd, mStart);
 assert.strictEqual(fin.start, new Date(2026, 4, 29).getTime());
 assert.strictEqual(fin.end, new Date(2026, 4, 30).getTime());
-// August 2026 ends on Monday the 31st: the window is the full 24 h before the UTC reset, whatever the local clock
+// August 2026 ends on Monday the 31st: the window is the full 36 h before the UTC reset, whatever the local clock
 const augEnd = Date.UTC(2026, 8, 1), augStart = Date.UTC(2026, 7, 1);
 const aug = P.finishWindow(augEnd, augStart);
-assert.deepStrictEqual(aug, { start: augEnd - 24 * H, end: augEnd });
+assert.deepStrictEqual(aug, { start: augEnd - 36 * H, end: augEnd });
 const augRank = hitT => P.weekResult([{ t: augStart + 10 * 864e5, pct: 30 }, { t: hitT, pct: 100 }], augEnd, augEnd + H, augStart).grade;
 assert.strictEqual(augRank(augEnd - 2 * H), 'S');    // 2 h before the reset, even where that is 02:00 local
-assert.strictEqual(augRank(augEnd - 23 * H), 'S');
-assert.strictEqual(augRank(augEnd - 25 * H), 'A');
-// weekly: a 00:20 reset still gives the whole previous 24 h, not 20 minutes
+assert.strictEqual(augRank(augEnd - 35 * H), 'S');
+assert.strictEqual(augRank(augEnd - 37 * H), 'A');
+// weekly: a 00:20 reset still gives the whole 36 h, not 20 minutes of a last day
 const w020 = new Date(2026, 8, 21, 0, 20).getTime();
-assert.deepStrictEqual(P.finishWindow(w020), { start: w020 - 24 * H, end: w020 });
+assert.deepStrictEqual(P.finishWindow(w020), { start: w020 - 36 * H, end: w020 });
 assert.strictEqual(P.weekResult([{ t: w020 - 100 * H, pct: 40 }, { t: w020 - 23 * H, pct: 100 }], w020, w020 + H).grade, 'S');
 near(P.idealAt(mStart + (mEnd - mStart) / 2, mEnd, mStart), 50);
 const mRank = hitT => P.weekResult([{ t: local(10), pct: 30 }, { t: hitT, pct: 100 }], mEnd, mEnd + H, mStart);
@@ -93,13 +100,14 @@ assert.strictEqual(mRank(local(29, 9)).onFinalDay, true);
 assert.strictEqual(mRank(local(30, 10)).grade, 'A');       // Saturday: after the last working day
 assert.strictEqual(mRank(local(30, 10)).afterFinish, true);
 assert.strictEqual(mRank(local(31, 10)).grade, 'A');       // Sunday
+// early on a month costs its share of 31 days, not a rank per day
 assert.strictEqual(mRank(local(28, 15)).grade, 'A');       // Thursday
-assert.strictEqual(mRank(local(27, 15)).grade, 'B');       // Wednesday
-assert.strictEqual(mRank(local(25, 15)).grade, 'C');       // Monday
+assert.strictEqual(mRank(local(25, 15)).grade, 'A');       // Monday: 3.4 days blocked, score 94.6
+assert.strictEqual(mRank(local(15, 15)).grade, 'B');       // mid-month: 13.4 days blocked, score 78.4
 assert.strictEqual(P.sampleZone({ t: local(29), pct: 100 }, mEnd, mStart), 'zone');
 assert.strictEqual(P.sampleZone({ t: local(16), pct: 52 }, mEnd, mStart), 'zone');
-// weekly finish window is still the last 24 h
-assert.deepStrictEqual(P.finishWindow(end), { start: end - 24 * H, end });
+// weekly finish window is the last 36 h
+assert.deepStrictEqual(P.finishWindow(end), { start: end - 36 * H, end });
 const mAt = (day, pct) => ({ t: mStart + day * 864e5, pct });
 assert.strictEqual(P.sampleZone(mAt(15, 52), mEnd, mStart), 'zone');
 assert.strictEqual(P.sampleZone({ t: end - 3 * 864e5, pct: 90 }, end), 'over'); // weekly: 4 days in, ideal 57

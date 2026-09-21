@@ -24,11 +24,61 @@ const orgs = [
   { uuid: 'org-c', name: 'Acme', rate_limit_tier: 'default_claude_enterprise', capabilities: ['chat'] },
 ];
 
+// Cookie stores ('0' = normal window, '1' = incognito) and the server's live session keys: sk-a sees the orgs
+// above, sk-2 is a second person's account with one org.
+const jars = { 0: { sessionKey: 'sk-a', cf_clearance: 'cf', lastActiveOrg: 'org-a' } };
+const live = { 'sk-a': 'a', 'sk-a2': 'a', 'sk-2': 'two' };
+let rules = [];
+let dynRules = [];
+const seen = []; // cookie header of every saved-account request
+const web = {}; // webRequest listeners
+let reqId = 0;
+let rotate = null; // { from, to }: the server reissues `from` on its next request, and `from` then dies
+let botCheck = false; // every request gets an HTML 403, like a Cloudflare challenge
+const tabs = { reloaded: 0, created: [], updated: [] };
+const logouts = []; // keys the server was asked to log out
+const sessionOf = opts => {
+  if (opts?.credentials !== 'omit') return jars[0].sessionKey;
+  const r = rules.find(x => x.id === 1);
+  const cookie = r?.action.requestHeaders[0].value || '';
+  seen.push(cookie);
+  return /(?:^|; )sessionKey=([^;]+)/.exec(cookie)?.[1];
+};
+
 const ctx = {
   console,
+  setTimeout,
   importScripts: (...files) => files.forEach(f => vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), ctx)),
-  fetch: async url => {
-    const json = body => ({ ok: true, status: 200, json: async () => body });
+  fetch: async (url, opts) => {
+    const JSON_TYPE = { get: h => (h.toLowerCase() === 'content-type' ? 'application/json' : null) };
+    const json = body => ({ ok: true, status: 200, headers: JSON_TYPE, json: async () => body });
+    if (botCheck) return { ok: false, status: 403, headers: { get: () => 'text/html' }, json: async () => { throw new Error('html'); } };
+    const requestId = String(++reqId);
+    const initiator = 'chrome-extension://extid';
+    web.before({ requestId, initiator, url });
+    const key = sessionOf(opts);
+    const who = live[key];
+    const headers = [];
+    if (who && rotate?.from === key) {
+      live[rotate.to] = who;
+      delete live[key];
+      headers.push({ name: 'Set-Cookie', value: `sessionKey=${rotate.to}; Path=/; HttpOnly` });
+      rotate = null;
+    }
+    web.headers({ requestId, initiator, url, responseHeaders: headers });
+    if (url.endsWith('/api/auth/logout')) {
+      assert.strictEqual(opts.method, 'POST');
+      logouts.push(key);
+      delete live[key];
+      return json({});
+    }
+    if (!who) return { ok: false, status: 401, headers: JSON_TYPE, json: async () => ({ error: { type: 'account_session_invalid' } }) };
+    if (who === 'two') {
+      if (url.endsWith('/api/organizations')) return json([{ uuid: 'org-d', name: 'Second', capabilities: ['chat', 'claude_max'] }]);
+      if (url.endsWith('/api/account')) return json({ display_name: 'Alt', memberships: [{ organization: { uuid: 'org-d' } }] });
+      assert(url.endsWith('/organizations/org-d/usage'), `account two asked for ${url}`);
+      return json({ limits: [{ kind: 'weekly_all', percent: 5, resets_at: reset('org-d') }] });
+    }
     if (url.endsWith('/api/organizations')) return json(orgs);
     if (url.endsWith('/api/account')) {
       if (accountFails) return { ok: false, status: 404, json: async () => ({}) };
@@ -56,7 +106,12 @@ const ctx = {
       },
       onChanged: ev('changed'),
     },
-    runtime: { onInstalled: ev('installed'), onStartup: ev('startup'), onMessage: ev('message') },
+    runtime: { id: 'extid', onInstalled: ev('installed'), onStartup: ev('startup'), onMessage: ev('message') },
+    webRequest: {
+      onBeforeRequest: { addListener: fn => { web.before = fn; } },
+      onHeadersReceived: { addListener: (fn, filter, extra) => { assert(extra.includes('extraHeaders')); web.headers = fn; } },
+      onErrorOccurred: { addListener: (fn, filter) => { if (filter.urls.includes('https://claude.ai/api/auth/logout')) web.logoutError = fn; } },
+    },
     alarms: { onAlarm: ev('alarm'), create() {} },
     action: {
       onClicked: ev('clicked'),
@@ -65,7 +120,28 @@ const ctx = {
       setBadgeTextColor: async () => {},
       setTitle: async o => { badge.title = o.title; },
     },
-    tabs: { create() {} },
+    tabs: {
+      create: o => { tabs.created.push(o.url); },
+      query: async () => [{ id: 7 }],
+      reload: () => { tabs.reloaded++; },
+      update: (id, o) => { tabs.updated.push([id, o.url]); },
+    },
+    cookies: {
+      onChanged: ev('cookie'),
+      set: async ({ name, value, storeId = '0' }) => { (jars[storeId] ||= {})[name] = value; },
+      remove: async ({ name, storeId = '0' }) => { if (jars[storeId]) delete jars[storeId][name]; },
+      getAllCookieStores: async () => Object.keys(jars).map(id => ({ id })),
+      get: async ({ name, storeId }) => (jars[storeId]?.[name] ? { name, value: jars[storeId][name] } : null),
+      getAll: async ({ storeId }) => Object.entries(jars[storeId] || {}).map(([name, value]) => ({ name, value })),
+    },
+    declarativeNetRequest: {
+      updateDynamicRules: async ({ removeRuleIds = [], addRules = [] }) => {
+        dynRules = dynRules.filter(r => !removeRuleIds.includes(r.id)).concat(structuredClone(addRules));
+      },
+      updateSessionRules: async ({ removeRuleIds = [], addRules = [] }) => {
+        rules = rules.filter(r => !removeRuleIds.includes(r.id)).concat(structuredClone(addRules));
+      },
+    },
   },
 };
 vm.createContext(ctx);
@@ -178,6 +254,168 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert.notStrictEqual(badge.text, '?');
   const bad = await new Promise(res => listeners.message({ type: 'import', data: 'nonsense' }, {}, res));
   assert(bad.ok && /imported 0/.test(bad.msg), bad.msg);
+
+  // Second account: the browser signs in to sk-2. The first account keeps updating from its saved key, sent only
+  // through the session rule with credentials omitted, and the rule is gone after the poll.
+  usageFail = new Set();
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a']);
+  let clock = Date.now();
+  const tick = () => { clock += 6e4; vm.runInContext(`Date.now = () => ${clock}`, ctx); return poll(); };
+  jars[0].sessionKey = 'sk-2';
+  const m1 = await tick();
+  assert(m1.ok, m1.msg);
+  const polled = () => store.points.filter(p => p.t === store.status.t).map(p => p.org).sort();
+  assert.deepStrictEqual(polled(), ['org-a', 'org-b', 'org-c', 'org-d']);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2', 'sk-a']);
+  assert.strictEqual(store.orgUsers['org-d'], 'Alt');
+  assert.strictEqual(rules.length, 0, 'session rule removed after the poll');
+  const sent = seen[seen.length - 1];
+  assert(/sessionKey=sk-a$/.test(sent) && /cf_clearance=cf/.test(sent) && !/lastActiveOrg|sk-2/.test(sent), sent);
+
+  // the saved key stops working (logged out on claude.ai): reported and kept, the other account still polled
+  delete live['sk-a'];
+  const m2 = await tick();
+  assert(!m2.ok && /Flo: signed out/.test(m2.msg), m2.msg);
+  assert.deepStrictEqual(polled(), ['org-d']);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2', 'sk-a']);
+  assert.strictEqual(store.sessions[1].failedSince, clock);
+
+  // logged in again in an incognito window: that store's key is picked up
+  live['sk-a'] = 'a';
+  jars[1] = { sessionKey: 'sk-a' };
+  const m3 = await tick();
+  assert(m3.ok, m3.msg);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2', 'sk-a']);
+  assert(!store.sessions[1].failedSince, 'working again: no longer marked');
+  delete jars[1];
+
+  // the same account under a newer key in the browser: the older saved key is dropped
+  jars[0].sessionKey = 'sk-a2';
+  const m4 = await tick();
+  assert(m4.ok, m4.msg);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a2', 'sk-2']);
+
+  // claude.ai reissues the saved key during a poll: the new key replaces it and keeps working
+  rotate = { from: 'sk-2', to: 'sk-2b' };
+  const r1 = await tick();
+  assert(r1.ok, r1.msg);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a2', 'sk-2b']);
+  const r2 = await tick();
+  assert(r2.ok, r2.msg);
+  assert(/sessionKey=sk-2b$/.test(seen[seen.length - 1]));
+  assert.strictEqual(jars[0].sessionKey, 'sk-a2', 'browser login untouched');
+
+  // a login in any window polls at once: the new account's points arrive without waiting for the alarm
+  clock += 6e4;
+  vm.runInContext(`Date.now = () => ${clock}`, ctx);
+  listeners.cookie({ removed: false, cookie: { name: 'other', domain: '.claude.ai', value: 'x' } });
+  await new Promise(r => setTimeout(r, 20));
+  assert(store.status.t < clock, 'other cookies do not poll');
+  listeners.cookie({ removed: false, cookie: { name: 'sessionKey', domain: '.claude.ai', value: 'sk-a2' } });
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(store.status.t, clock);
+
+  // browser signed out, saved accounts still read: not an error
+  jars[0].sessionKey = undefined;
+  const m5 = await tick();
+  assert(m5.ok && m5.msg === 'ok', m5.msg);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a2', 'sk-2b']);
+
+  // an HTML 403 (bot check) is not a sign-out: nothing marked or forgotten
+  botCheck = true;
+  const b1 = await tick();
+  botCheck = false;
+  assert(!b1.ok && /not a login answer/.test(b1.msg), b1.msg);
+  assert.deepStrictEqual(store.sessions.map(s => [s.key, !!s.failedSince]), [['sk-a2', false], ['sk-2b', false]]);
+
+  // refused for a month: still on the list and retried every poll (only "Log out" removes it), resumes when valid
+  delete live['sk-2b'];
+  await tick();
+  const since = store.sessions.find(s => s.key === 'sk-2b').failedSince;
+  assert(since);
+  clock += 30 * 864e5;
+  const g1 = await tick();
+  assert(/Alt: signed out/.test(g1.msg), g1.msg);
+  assert.deepStrictEqual(store.sessions.map(s => [s.key, s.failedSince]), [['sk-a2', undefined], ['sk-2b', since]]);
+  live['sk-2b'] = 'two';
+  const g2 = await tick();
+  assert(g2.ok, g2.msg);
+  assert(!store.sessions.find(s => s.key === 'sk-2b').failedSince);
+
+  const send = msg => new Promise(res => listeners.message(msg, {}, res));
+  // Add account: the browser's login is cleared here only (its key stays saved) and a login tab opens
+  jars[0].sessionKey = 'sk-2b';
+  jars[0].lastActiveOrg = 'org-d';
+  await tick();
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2b', 'sk-a2']);
+  const add = await send({ type: 'add' });
+  assert(add.ok, add.msg);
+  assert.strictEqual(jars[0].sessionKey, undefined);
+  assert.strictEqual(jars[0].lastActiveOrg, undefined);
+  assert.deepStrictEqual(tabs.created, ['https://claude.ai/login']);
+  await poll();
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2b', 'sk-a2'], 'both accounts still polled');
+
+  // the account menu learns which saved logins are refused, never the keys
+  delete live['sk-2b'];
+  await tick();
+  const list = await send({ type: 'accounts' });
+  assert(list.every(a => !('key' in a)), 'no keys leave the worker');
+  assert.deepStrictEqual(list.map(a => [a.orgIds.join(), a.signedOut]).sort(), [['org-a,org-b,org-c', false], ['org-d', true]]);
+  live['sk-2b'] = 'two';
+  await tick();
+
+  // the user logs in to org-a's account again in the browser
+  jars[0].sessionKey = 'sk-a2';
+  await tick();
+
+  // Log out (extension): the account showing org-a stops updating and is hidden; its session is ended on the
+  // server and the browser's login to it is cleared; logging in to it again brings it back
+  const out = await send({ type: 'forget', org: 'org-a' });
+  assert(out.ok, out.msg);
+  assert.deepStrictEqual(logouts, ['sk-a2']);
+  assert(!live['sk-a2'], 'session ended on claude.ai');
+  assert.strictEqual(rules.length, 0, 'session rule removed after the logout');
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2b']);
+  assert.deepStrictEqual([...store.hiddenOrgs].sort(), ['org-a', 'org-b', 'org-c']);
+  assert.strictEqual(jars[0].sessionKey, undefined);
+  const o1 = await tick();
+  assert(o1.ok, o1.msg);
+  assert.deepStrictEqual(polled(), ['org-d']);
+  live['sk-a3'] = 'a';
+  jars[0].sessionKey = 'sk-a3';
+  await tick();
+  assert.deepStrictEqual(store.hiddenOrgs, []);
+
+  // claude.ai's own Log out, its request blocked: an account switch. The key stays saved and alive, the login is
+  // cleared in that window only, the tab goes to the login page, and both accounts keep updating.
+  listeners.installed();
+  listeners.installed();
+  assert.deepStrictEqual(dynRules.map(r => [r.id, r.action.type, r.condition.urlFilter, r.condition.initiatorDomains.join(), r.condition.requestMethods.join()]),
+    [[2, 'block', '|https://claude.ai/api/auth/logout', 'claude.ai', 'post']], 'one block rule, only for the page\'s POST');
+  const blocked = { method: 'POST', initiator: 'https://claude.ai', error: 'net::ERR_BLOCKED_BY_CLIENT', tabId: 7 };
+  web.logoutError({ ...blocked, error: 'net::ERR_FAILED' });
+  web.logoutError({ ...blocked, initiator: 'chrome-extension://extid' });
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(jars[0].sessionKey, 'sk-a3', 'other errors and our own logout are not a switch');
+  web.logoutError(blocked);
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(jars[0].sessionKey, undefined);
+  assert.strictEqual(jars[0].lastActiveOrg, undefined);
+  assert.deepStrictEqual(tabs.updated, [[7, 'https://claude.ai/login']]);
+  assert(live['sk-a3'], 'session not ended');
+  assert.deepStrictEqual(store.sessions.map(s => s.key).sort(), ['sk-2b', 'sk-a3']);
+  const w1 = await tick();
+  assert(w1.ok, w1.msg);
+  assert.deepStrictEqual(polled(), ['org-a', 'org-b', 'org-c', 'org-d']);
+
+  // dead keys: older keys of a working account vanish silently; two dead keys of one signed-out account = one line
+  store.sessions.push(
+    { key: 'old1', name: 'Flo', orgIds: ['org-a', 'org-b', 'org-c'] }, { key: 'old2', name: 'Flo', orgIds: ['org-a', 'org-b', 'org-c'] },
+    { key: 'bx1', name: 'Boss', orgIds: ['org-x'] }, { key: 'bx2', name: 'Boss', orgIds: ['org-x'] });
+  const d1 = await tick();
+  assert.strictEqual(d1.msg, 'ok; Boss: signed out (log in to it again, or Log out to hide it)');
+  assert.deepStrictEqual(store.sessions.map(s => s.key).sort(), ['bx1', 'sk-2b', 'sk-a3']);
 
   console.log('poll tests passed');
 })().catch(e => { console.error(e); process.exit(1); });

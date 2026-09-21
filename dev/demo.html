@@ -60,7 +60,7 @@
                 { t: Date.now(), org: 'org-a', key: 'Fable', pct: 63, reset });
   }
   // ?scenario=s | a | monthly: the README pictures. s = a finished week that wandered under, over and back into
-  // the zone (every dot colour) and hit 100% on the finish day; a = a finished week that hit 100% almost two days
+  // the zone (every dot colour) and hit 100% in the finish zone; a = a finished week that hit 100% almost two days
   // early; monthly = a live Enterprise month.
   const scenario = new URLSearchParams(location.search).get('scenario');
   if (scenario === 's' || scenario === 'a') {
@@ -80,7 +80,7 @@
       s: { 'All models': path([[0, 0], [0.3, 5], [0.45, 40], [0.55, 80], [0.62, 86], [0.8, 88], [0.9, 93], [0.955, 100]]),
            Fable: path([[0, 0], [0.2, 12], [0.42, 17], [0.56, 52], [0.7, 93], [0.86, 95], [0.965, 100]]) },
       a: { 'All models': path([[0, 0], [0.25, 45], [0.5, 76], [0.65, 89], [0.839, 100]]),
-           Fable: f => Math.min(100, 100 * f * 1.45) },
+           Fable: f => Math.min(100, 100 * f * 1.8) },
     }[scenario];
     for (const [key, fn] of Object.entries(curve)) {
       for (let t = start + 2 * H; t < end - 0.5 * H; t += 2 * H) {

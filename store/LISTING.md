@@ -20,7 +20,6 @@ The extension records your claude.ai weekly usage every 10 minutes and draws one
 * Pace figure: how far ahead of or behind the ideal pace you are
 * Hover any point to see the exact percentage, time, and ideal value
 * Browse past weeks
-* Fit data or full-week view
 * Export and import your history as JSON
 
 Privacy: the extension only reads your usage percentages from claude.ai using your existing login. Everything stays in your browser. No server, no analytics.

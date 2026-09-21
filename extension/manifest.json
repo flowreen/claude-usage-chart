@@ -5,12 +5,8 @@
   "version": "1.0.0",
   "description": "Unofficial. Charts your claude.ai weekly limits over time against the ideal pace. Data stays in your browser.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "unlimitedStorage", "alarms"],
-  "host_permissions": [
-    "https://claude.ai/api/account",
-    "https://claude.ai/api/organizations",
-    "https://claude.ai/api/organizations/*/usage"
-  ],
+  "permissions": ["storage", "unlimitedStorage", "alarms", "cookies", "declarativeNetRequestWithHostAccess", "webRequest"],
+  "host_permissions": ["https://claude.ai/*"],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "Open weekly usage chart",

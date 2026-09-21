@@ -14,8 +14,10 @@
     --bad: #ff7b6b; --gold: #ffc53d; --gold-glow: rgba(255, 197, 61, .5); --band: rgba(255, 197, 61, .12);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+  body { margin: 0; overflow: hidden; background: var(--bg); color: var(--fg);
          font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  /* The whole page is one picture: fixed design width, scaled to fit the window (fit() in chart.js). */
+  #stage { position: absolute; top: 0; left: 0; padding: 16px; transform-origin: 0 0; }
   button, select { font: inherit; color: var(--fg); background: var(--btn); border: 1px solid var(--btn-border);
                    border-radius: 8px; padding: 6px 14px; cursor: pointer; }
   #rename-input { font: inherit; color: var(--fg); background: var(--btn); border: 1px solid var(--dot);
@@ -45,7 +47,6 @@
   .bottom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; margin-top: 16px; }
   .status.bad { color: var(--bad); }
   .empty { color: var(--muted); text-align: center; padding: 48px 0; }
-  @media (max-width: 900px) { .panel + .panel { border-left: 0; border-top: 1px solid var(--grid); } }
 
   /* zone band, dots, projection */
   .zone-band { fill: var(--band); stroke: var(--gold); stroke-opacity: .35; stroke-width: 1; }
@@ -118,15 +119,13 @@
 </style>
 </head>
 <body>
+  <div id="stage">
   <div class="top">
     <select id="account" title="Account" hidden></select>
     <input id="rename-input" type="text" maxlength="60" placeholder="Account name (empty = default)" hidden>
     <button id="rename" title="Rename this account" hidden>✎ Rename</button>
+    <button id="logout" title="Log this account out of claude.ai and remove it from the chart (its points stay; log in to it again to bring it back)" hidden>Log out</button>
     <select id="week" title="Period"></select>
-    <select id="view" title="Zoom">
-      <option value="full">Full period</option>
-      <option value="fit">Fit data</option>
-    </select>
   </div>
   <div class="charts" id="charts"></div>
   <div class="bottom">
@@ -137,6 +136,7 @@
     <input id="file" type="file" accept="application/json,.json" hidden>
     <span class="sub" id="count"></span>
     <span class="sub status" id="status"></span>
+  </div>
   </div>
   <script src="pace.js"></script>
   <script src="chart.js"></script>

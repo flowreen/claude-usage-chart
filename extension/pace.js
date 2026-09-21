@@ -4,7 +4,7 @@
 const PACE_WEEK = 7 * 864e5;
 const PACE_HOUR = 36e5;
 const PACE_ZONE_MS = 36 * PACE_HOUR; // this much ideal pace either side of the line counts as "in the zone"
-const PACE_FINAL_DAY = 24 * PACE_HOUR;
+const PACE_FINAL_DAY = PACE_ZONE_MS; // finish window length: where the zone band reaches 100%
 const clampPct = v => Math.min(100, Math.max(0, v));
 
 function idealAt(t, end, start = end - PACE_WEEK) {
@@ -25,12 +25,10 @@ function zoneOf(d, z) {
   return Math.abs(d) <= z ? 'zone' : d > 0 ? 'over' : 'under';
 }
 
-// The window where reaching 100% earns the top rank. Always a full 24 h: a reset at 00:20 must not leave
-// 20 minutes of "last day".
-// Weekly limits: the 24 h before the reset, whatever the clock says.
-// Monthly spend (Enterprise): the period's last day, taken from the billing month (UTC, like the reset). When
-// it is a working day, the 24 h before the reset. When it is a Saturday or Sunday the weekend does not count:
-// the Friday before it, as a local calendar day.
+// The window where reaching 100% earns the top rank: from where the zone band reaches 100% (36 h before the
+// reset, so finishing needs no night shift) to the reset, whatever the clock says (a 00:20 reset still gets it all).
+// Monthly spend (Enterprise): the same when the billing month's last day (UTC, like the reset) is a working day.
+// When it is a Saturday or Sunday the weekend does not count: the Friday before it, as a local calendar day.
 function finishWindow(end, start = end - PACE_WEEK) {
   if (end - start <= 8 * 864e5) return { start: end - PACE_FINAL_DAY, end };
   const last = new Date(end - 1);
@@ -43,7 +41,7 @@ function finishWindow(end, start = end - PACE_WEEK) {
 
 // Zone of a sample. Nothing used yet never counts as in the zone, or every period would start with a free streak.
 // At 100% inside the finish window the goal is reached, so it is not "over" even though the line is below 100.
-// At 100% before it the limit blocks use, so it is "over" even where the zone reaches up to 100.
+// At 100% before it the limit blocks use, so it is "over".
 function sampleZone(p, end, start) {
   if (p.pct <= 0) return 'under';
   const fin = finishWindow(end, start);
@@ -84,10 +82,13 @@ function projection(pts, end, start = end - PACE_WEEK) {
   return { from: last, rate, projected, hitAt };
 }
 
-// Rank S..D. The goal is 100% at any time inside the finish window (see finishWindow).
-// Reaching 100% inside it = S; after it (monthly: the weekend) = A; each day before it drops one rank
-// (A, B, then C), since the limit then blocks use for days. Never reaching 100% ranks by final usage:
-// 90%+ A, 75%+ B, 50%+ C, else D. Distance from the line is reported but does not affect the rank.
+// Rank S..D from one score: final usage minus half the share of the period the limit blocked before the finish
+// window (see finishWindow). Leaving quota unused wastes it; hitting the limit early wastes none of it but blocks
+// work, so a blocked stretch costs half its share. S 95+, A 90+, B 75+, C 50+, else D. S also needs no block
+// before the finish window, and 100% after it (monthly: the weekend) is at most A.
+// Distance from the line is reported but does not affect the rank.
+const PACE_RANK_S = 95;
+const PACE_BLOCK_WEIGHT = 0.5;
 function weekResult(pts, end, now, start) {
   if (!pts.length) return null;
   const live = end > now;
@@ -97,15 +98,13 @@ function weekResult(pts, end, now, start) {
   const final = hitAt ? 100 : Math.min(100, live ? proj.projected : pts[pts.length - 1].pct);
   const earlyMs = hitAt ? end - hitAt : 0;
   const fin = finishWindow(end, start);
-  let grade;
-  if (hitAt) {
-    if (hitAt > fin.end) grade = 'A';
-    else grade = ['S', 'A', 'B'][Math.ceil(Math.max(0, fin.start - hitAt) / 864e5)] || 'C';
-  } else {
-    grade = final >= 90 ? 'A' : final >= 75 ? 'B' : final >= 50 ? 'C' : 'D';
-  }
+  const blockedMs = hitAt ? Math.max(0, fin.start - hitAt) : 0;
+  const score = final - PACE_BLOCK_WEIGHT * blockedMs / (end - (start ?? end - PACE_WEEK)) * 100;
+  const capA = blockedMs > 0 || (!!hitAt && hitAt > fin.end);
+  let grade = score >= PACE_RANK_S ? 'S' : score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 50 ? 'C' : 'D';
+  if (grade === 'S' && capA) grade = 'A';
   const onFinalDay = !!hitAt && hitAt >= fin.start && hitAt <= fin.end;
-  return { grade, final, avgDev, hitAt, earlyMs, onFinalDay, afterFinish: !!hitAt && hitAt > fin.end, live };
+  return { grade, score, final, avgDev, hitAt, earlyMs, blockedMs, onFinalDay, afterFinish: !!hitAt && hitAt > fin.end, live };
 }
 
 function formatMoney(v, currency = 'USD') {
