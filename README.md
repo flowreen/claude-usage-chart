@@ -4,11 +4,11 @@ Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every 10 minute
 
 ## What it looks like
 
-**Rank S: the ideal week.** The flat stretches are the hours away from work. Usage drifts under the dashed ideal line (blue dots, violet on Fable), overshoots it (red), comes back within a day and a half of pace of it (gold, "in the zone": 21 points on a week) and reaches 100% in the finish zone, the last 36 hours before the reset (where the zone band reaches 100%, so finishing needs no late night). Nothing left unused, nothing blocked early. Ending at 95% or more without being blocked is S too.
+**Rank S: the ideal week.** The flat stretches are the hours away from work. Usage drifts under the dashed ideal line (blue dots), overshoots it (red), comes back within a day and a half of pace of it (gold, "in the zone": 21 points on a week) and reaches 100% in the finish zone, the last 36 hours before the reset (where the zone band reaches 100%, so finishing needs no late night). Nothing left unused, nothing blocked early. Ending at 95% or more without being blocked is S too.
 
 ![Rank S: usage wanders under, over and back into the zone, then hits 100% in the finish zone](docs/rank-s.png)
 
-**Rank A: ran out early.** Usage climbs faster than the line (red dots) and hits 100% 40 hours before the reset, so the limit blocks part of the last days. A blocked week never ranks S, and the blocked stretch costs half its share of the week (the Fable chart here, 3.7 days early: B).
+**Rank A: ran out early.** Usage climbs faster than the line (red dots) and hits 100% 40 hours before the reset, so the limit blocks part of the last days. A blocked week never ranks S, and the blocked stretch costs half its share of the week.
 
 **How the rank works.** Score = usage at the reset, minus half the share of the period the limit blocked before the finish window. Unused quota is wasted; hitting the limit early wastes none of it but stops work, so it costs half. S 95+, A 90+, B 75+, C 50+, else D. Hover the rank chip for the score.
 
@@ -44,7 +44,7 @@ Logging in to another account in an Incognito window also works (turn on "Allow 
 
 ## Layout
 
-* `extension/`: the unpacked extension. `manifest.json`, `background.js` (poller), `parse.js` (usage payload parser, import merge), `pace.js` (ideal line, zone, finish window, rank maths), `chart.html` + `chart.js` (chart page), `icons/`
+* `extension/`: the unpacked extension. `manifest.json`, `background.js` (poller), `parse.js` (usage payload parser, import merge), `pace.js` (ideal line, zone, finish window, rank maths), `chart.html` + `chart.js` (chart page; `HIDDEN_SERIES` lists limits that are recorded but not drawn, Fable today), `icons/`
 * `dev/`: `test_parse.js`, `test_pace.js` (run under several TZ values), `test_poll.js` (background.js against a fake claude.ai: two weekly orgs, one monthly, several accounts), `test_chrome_multi.js` (the several-accounts plumbing in a real Chrome for Testing against a local fake claude.ai; needs Chrome for Testing and openssl, Windows path), `demo.html` (chart with fake data), `promo.html` (store tile source), `make_icons.py`, `build.py`
 * `docs/`: README screenshots
 * `store/`: listing copy, privacy policy, store images

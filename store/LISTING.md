@@ -15,7 +15,7 @@ Unofficial. Charts your claude.ai weekly limits over time against the ideal pace
 
 See how fast you are using your Claude weekly limits, not just where they stand right now.
 
-The extension records your claude.ai weekly usage every 10 minutes and draws one chart per limit (All models, plus per-model caps such as Fable). A dashed line shows the ideal pace, where usage would reach 100% exactly at the reset.
+The extension records your claude.ai weekly usage every 10 minutes and draws your All models limit as a chart (the Fable cap is recorded too, not drawn). A dashed line shows the ideal pace, where usage would reach 100% exactly at the reset.
 
 * Pace figure: how far ahead of or behind the ideal pace you are
 * Hover any point to see the exact percentage, time, and ideal value

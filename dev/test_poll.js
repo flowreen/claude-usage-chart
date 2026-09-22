@@ -35,6 +35,7 @@ const web = {}; // webRequest listeners
 let reqId = 0;
 let rotate = null; // { from, to }: the server reissues `from` on its next request, and `from` then dies
 let botCheck = false; // every request gets an HTML 403, like a Cloudflare challenge
+let loginTo = null; // the browser signs in to this key right before the next plain request (a login landing mid-poll)
 const tabs = { reloaded: 0, created: [], updated: [] };
 const logouts = []; // keys the server was asked to log out
 const sessionOf = opts => {
@@ -53,6 +54,11 @@ const ctx = {
     const JSON_TYPE = { get: h => (h.toLowerCase() === 'content-type' ? 'application/json' : null) };
     const json = body => ({ ok: true, status: 200, headers: JSON_TYPE, json: async () => body });
     if (botCheck) return { ok: false, status: 403, headers: { get: () => 'text/html' }, json: async () => { throw new Error('html'); } };
+    if (loginTo && opts?.credentials !== 'omit') {
+      jars[0].sessionKey = loginTo;
+      listeners.cookie({ removed: false, cookie: { name: 'sessionKey', domain: '.claude.ai', value: loginTo } });
+      loginTo = null;
+    }
     const requestId = String(++reqId);
     const initiator = 'chrome-extension://extid';
     web.before({ requestId, initiator, url });
@@ -289,10 +295,15 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert(!store.sessions[1].failedSince, 'working again: no longer marked');
   delete jars[1];
 
-  // the same account under a newer key in the browser: the older saved key is dropped
+  // the same account under a newer key in the browser: the older saved key stays while it works (only a refusal or
+  // "Log out" removes a key), and once claude.ai refuses it, it is dropped silently as an older key of a working one
   jars[0].sessionKey = 'sk-a2';
   const m4 = await tick();
   assert(m4.ok, m4.msg);
+  assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a2', 'sk-2', 'sk-a']);
+  delete live['sk-a'];
+  const m4b = await tick();
+  assert(m4b.ok && m4b.msg === 'ok', m4b.msg);
   assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-a2', 'sk-2']);
 
   // claude.ai reissues the saved key during a poll: the new key replaces it and keeps working
@@ -416,6 +427,23 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   const d1 = await tick();
   assert.strictEqual(d1.msg, 'ok; Boss: signed out (log in to it again, or Log out to hide it)');
   assert.deepStrictEqual(store.sessions.map(s => s.key).sort(), ['bx1', 'sk-2b', 'sk-a3']);
+
+  // a login to another account landing mid-poll: the old login's key keeps its own orgs, the new login is polled
+  // right after, and a later refusal of the old key is still reported, never dropped as an older key of the new one
+  store.sessions = store.sessions.filter(s => s.key !== 'bx1');
+  jars[0].sessionKey = 'sk-2b';
+  await tick();
+  loginTo = 'sk-a3';
+  await tick();
+  await new Promise(r => setTimeout(r, 20));
+  const orgsOf = k => store.sessions.find(s => s.key === k)?.orgIds.join();
+  assert.strictEqual(orgsOf('sk-2b'), 'org-d');
+  assert.strictEqual(orgsOf('sk-a3'), 'org-a,org-b,org-c');
+  delete live['sk-2b'];
+  const f1 = await tick();
+  assert(/Alt: signed out/.test(f1.msg), f1.msg);
+  assert.strictEqual(orgsOf('sk-2b'), 'org-d');
+  live['sk-2b'] = 'two';
 
   console.log('poll tests passed');
 })().catch(e => { console.error(e); process.exit(1); });

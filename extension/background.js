@@ -56,8 +56,12 @@ async function getJson(url, credentials = 'include') {
 // browser signs in to another. Keys stay in local extension storage and are never exported.
 
 // A login in any window is polled right away, so its key is saved before the browser moves to another account.
+// One landing during a poll gets a poll of its own after it: the running one read the cookies before it.
 chrome.cookies?.onChanged.addListener(({ cookie, removed }) => {
-  if (!removed && cookie.name === SESSION_COOKIE && /(^|\.)claude\.ai$/.test(cookie.domain)) poll();
+  if (!removed && cookie.name === SESSION_COOKIE && /(^|\.)claude\.ai$/.test(cookie.domain)) {
+    if (inFlight) pollAgain = true;
+    poll();
+  }
 });
 
 // Which saved accounts claude.ai refuses, for "(signed out)" in the chart's account menu (no keys leave the worker).
@@ -227,8 +231,12 @@ async function withSession(key, fn) {
 let chain = Promise.resolve();
 const serial = fn => { const r = chain.then(fn); chain = r.catch(() => {}); return r; };
 let inFlight = null;
+let pollAgain = false;
 function poll() {
-  inFlight ??= serial(pollOnce).finally(() => { inFlight = null; });
+  inFlight ??= serial(pollOnce).finally(() => {
+    inFlight = null;
+    if (pollAgain) { pollAgain = false; poll(); }
+  });
   return inFlight;
 }
 const importData = data => serial(() => importOnce(data));
@@ -255,8 +263,16 @@ async function pollOnce() {
       const old = saved.find(s => s.key === run.key);
       try {
         const acct = run.plain ? await pollAccount(getJson, data) : await withSession(run.key, get => pollAccount(get, data));
-        // A saved key whose orgs were all read already is the same account under an older key: dropped.
-        if (run.key && (run.plain || acct.tried)) {
+        // The browser's login changed during the poll: what was read may belong to the new login, not to run.key.
+        // The points stand (they carry their org), but pairing run.key with those orgs would let a later refusal of
+        // it drop it silently as an older key of the new account. Kept as it was; the next poll reads both.
+        if (run.plain && run.key && (await browserKeys()).main !== run.key) {
+          sessions.push(old || { key: run.key, name: '', orgIds: [] });
+          continue;
+        }
+        // Every working key is kept, also a second login of an account read already: only claude.ai refusing a
+        // key (below) or the user's "Log out" removes one, so no live account can drop off the list unnoticed.
+        if (run.key) {
           sessions.push({ key: run.key, name: acct.name || old?.name || '', orgIds: acct.orgIds });
         }
         // signed in again after "Log out": back in the list
@@ -369,7 +385,7 @@ async function pollAccount(get, data) {
     const msgs = errors.splice(errors.length - failures.length);
     throw Object.assign(new Error(msgs.join('; ')), { auth: failures.every(e => e.auth) });
   }
-  return { name, orgIds: targets.map(o => o.uuid || o.id), tried };
+  return { name, orgIds: targets.map(o => o.uuid || o.id) };
 }
 
 // An export file from the chart page: { points, orgNames, orgPlans, orgUsers, orgAliases } or a bare points array.

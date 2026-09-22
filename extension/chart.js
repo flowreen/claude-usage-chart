@@ -2,6 +2,9 @@ const HOUR = 36e5;
 const UNUSED_WARN = 5; // projected % left unused at the reset above which the line turns red
 const NS = 'http://www.w3.org/2000/svg';
 const PANEL_W = 796; // design width of one chart: .panel max-width plus its side padding
+// Series still polled and stored but not drawn (case-insensitive). Remove a name to bring its chart back with its
+// full history; the frontier look in panel() and chart.html stays for that.
+const HIDDEN_SERIES = ['Fable'];
 // orgNames, orgPlans and orgUsers (the signed-in person's name) come from claude.ai; orgAliases are names the
 // user typed and win over everything.
 const ORG_MAPS = ['orgNames', 'orgPlans', 'orgUsers', 'orgAliases'];
@@ -62,7 +65,7 @@ function orgs() {
 function showStatus(s) {
   const el = $('status');
   if (!s) { el.textContent = 'no poll yet'; return; }
-  el.textContent = `last poll ${new Date(s.t).toLocaleString()}: ${s.msg}`;
+  el.textContent = `last poll ${new Date(s.t).toLocaleString(undefined, { hourCycle: 'h23' })}: ${s.msg}`;
   el.classList.toggle('bad', !s.ok);
 }
 
@@ -139,6 +142,7 @@ function render() {
   const reset = ws[weekIdx];
   const inWeek = orgPts.filter(p => Math.abs(p.reset - reset) < 6 * HOUR);
   const keys = [...new Set(inWeek.map(p => p.key))]
+    .filter(k => !HIDDEN_SERIES.some(h => h.toLowerCase() === k.toLowerCase()))
     .sort((a, b) => (a === 'All models' ? -1 : b === 'All models' ? 1 : a.localeCompare(b)));
   for (const k of keys) {
     const pts = inWeek.filter(p => p.key === k).sort((a, b) => a.t - b.t);
@@ -374,7 +378,7 @@ function fmtDur(ms) {
   return `${(h / 24).toFixed(1)}d`;
 }
 
-const fmtWhen = t => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const fmtWhen = t => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
 // Hovering anywhere over the plot snaps to the nearest sample and shows its exact value.
 function hover(div, svg, pts, X, Y, box, end, start, cash) {
@@ -410,7 +414,7 @@ function hover(div, svg, pts, X, Y, box, end, start, cash) {
     tip.children[0].textContent = cash ? `${cash(best.pct)} · ${fmtPct(best.pct)}` : fmtPct(best.pct);
     tip.children[0].className = `tip-${z}`;
     tip.children[1].textContent = new Date(best.t).toLocaleString(undefined,
-      { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     tip.children[2].textContent = best.anchor ? `${cash ? 'month' : 'week'} start: usage resets to 0`
       : `ideal ${ideal.toFixed(1)}% · ${d > 0 ? '+' : ''}${d.toFixed(1)}%` + (z === 'zone' ? ' · in the zone' : '');
     tip.style.display = 'block';
