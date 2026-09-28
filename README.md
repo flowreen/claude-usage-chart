@@ -1,6 +1,6 @@
 # Claude Weekly Usage Chart
 
-Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every 10 minutes and charts them against the ideal pace, with a rank for how close you finish to 100% at the reset. Tracks several claude.ai accounts at once, each one keeps updating while the browser is signed in to another. Not affiliated with Anthropic. Data stays in your browser.
+Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every minute, stores a point each time a value moves, and charts them against the ideal pace, with a rank for how close you finish to 100% at the reset. Tracks several claude.ai accounts at once, each one keeps updating while the browser is signed in to another. Not affiliated with Anthropic. Data stays in your browser.
 
 ## What it looks like
 

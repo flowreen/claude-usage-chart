@@ -1,7 +1,7 @@
 importScripts('parse.js', 'pace.js');
 
 const API = 'https://claude.ai/api';
-const POLL_MIN = 10;
+const POLL_MIN = 1;
 const MINUTE = 6e4;
 const MONTHLY_KEY = 'Monthly spend';
 // Per-account labels kept next to the points (see chart.js).
@@ -21,6 +21,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg?.type === 'import') { importData(msg.data).then(reply); return true; }
   if (msg?.type === 'accounts') { accountList().then(reply); return true; }
   if (msg?.type === 'forget') { serial(() => forgetOnce(msg.org)).then(reply); return true; }
+  if (msg?.type === 'delete') { serial(() => deleteOnce(msg.org, msg.reset)).then(reply); return true; }
   if (msg?.type === 'add') {
     serial(addAccountOnce).then(reply, e => reply({ t: Date.now(), ok: false, msg: String(e.message || e) }));
     return true;
@@ -246,8 +247,8 @@ const importData = data => serial(() => importOnce(data));
 async function pollOnce() {
   const now = Date.now();
   try {
-    const stored = await chrome.storage.local.get(['points', 'orgNames', 'orgPlans', 'orgUsers', 'sessions', 'hiddenOrgs']);
-    const { points = [], orgNames = {}, orgPlans = {}, orgUsers = {} } = stored;
+    const stored = await chrome.storage.local.get(['points', 'held', 'orgNames', 'orgPlans', 'orgUsers', 'sessions', 'hiddenOrgs']);
+    const { points = [], held = {}, orgNames = {}, orgPlans = {}, orgUsers = {} } = stored;
     let hiddenOrgs = Array.isArray(stored.hiddenOrgs) ? stored.hiddenOrgs : [];
     const saved = Array.isArray(stored.sessions) ? stored.sessions.filter(s => typeof s?.key === 'string') : [];
     const browser = await browserKeys();
@@ -255,7 +256,7 @@ async function pollOnce() {
     for (const key of [...browser.others, ...saved.map(s => s.key)]) {
       if (!runs.some(r => r.key === key)) runs.push({ key });
     }
-    const data = { now, points, orgNames, orgPlans, orgUsers, done: new Set(), errors: [], read: 0 };
+    const data = { now, points, held, moved: false, orgNames, orgPlans, orgUsers, done: new Set(), errors: [], read: 0 };
     const sessions = [];
     const fatal = [];
     const refused = [];
@@ -313,8 +314,9 @@ async function pollOnce() {
     const { errors } = data;
     const msg = errors.length ? `ok; ${errors.join('; ')}` : 'ok';
     const status = { t: now, ok: !errors.length, msg };
-    await chrome.storage.local.set({ points, orgNames, orgPlans, orgUsers, sessions, hiddenOrgs, status });
-    await updateBadge(points, now);
+    // The points list is the large value: written only by a poll that changed it.
+    await chrome.storage.local.set({ ...(data.moved && { points }), held, orgNames, orgPlans, orgUsers, sessions, hiddenOrgs, status });
+    await updateBadge(withHeld(points, held), now);
     return status;
   } catch (e) {
     const status = { t: now, ok: false, msg: String(e.message || e) };
@@ -362,16 +364,9 @@ async function pollAccount(get, data) {
         if (m) series[MONTHLY_KEY] = m;
       }
       for (const [key, v] of Object.entries(series)) {
-        let last;
-        for (let i = points.length - 1; i >= 0; i--) {
-          if (points[i].key === key && points[i].org === orgId) { last = points[i]; break; }
-        }
-        // Every poll saves a point, changed or not, at most one per minute per series: a second poll in the same
-        // minute (e.g. "Poll now" after using some tokens) replaces that minute's point with the newer value.
         const point = { t: now, org: orgId, key, pct: v.pct, reset: v.reset };
         if (key === MONTHLY_KEY) Object.assign(point, { start: v.start, used: v.used, limit: v.limit, currency: v.currency });
-        if (last && Math.floor(last.t / MINUTE) === Math.floor(now / MINUTE)) points[points.lastIndexOf(last)] = point;
-        else points.push(point);
+        savePoint(data, point);
       }
       done.add(orgId);
       data.read++;
@@ -388,12 +383,55 @@ async function pollAccount(get, data) {
   return { name, orgIds: targets.map(o => o.uuid || o.id) };
 }
 
+// Same value in the same period: resets_at moves a little from poll to poll, a new period moves it by days.
+const sameValue = (a, b) => a.pct === b.pct && a.used === b.used && a.limit === b.limit
+  && Math.abs(a.reset - b.reset) < 6 * PACE_HOUR;
+const withHeld = (points, held = {}) => [...points, ...Object.values(held)];
+
+// A point is saved when the value moved. While it stands still the polls only renew data.held, the newest sample
+// of each series that is not in the points list. When the value moves that sample is saved first, so the chart
+// holds the old value up to the last poll that saw it and shows the new one at its own minute.
+// At most one saved point per minute per series: a second poll in the same minute (e.g. "Poll now" after using
+// some tokens) replaces that minute's point with the newer value.
+function savePoint(data, point) {
+  const { points, held } = data;
+  const id = `${point.org}|${point.key}`;
+  const mine = p => p.org === point.org && p.key === point.key;
+  let i = points.findLastIndex(mine);
+  if (i >= 0 && Math.floor(points[i].t / MINUTE) === Math.floor(point.t / MINUTE)) {
+    points.splice(i, 1);
+    data.moved = true;
+    i = points.findLastIndex(mine);
+  }
+  const last = points[i];
+  const was = held[id];
+  delete held[id];
+  if (last && sameValue(last, point)) { held[id] = point; return; }
+  if (last && was && was.t > last.t && sameValue(was, last)) points.push(was);
+  points.push(point);
+  data.moved = true;
+}
+
+// "✕" on the chart page: the points of one period of one account leave the list, every series of it. A period
+// still running starts again with the next poll.
+async function deleteOnce(org, reset) {
+  const now = Date.now();
+  const { points = [], held = {} } = await chrome.storage.local.get(['points', 'held']);
+  const gone = p => p.org === org && Math.abs(p.reset - reset) < 6 * PACE_HOUR;
+  const kept = points.filter(p => !gone(p));
+  for (const [id, p] of Object.entries(held)) if (gone(p)) delete held[id];
+  const status = { t: now, ok: true, msg: `deleted ${points.length - kept.length} point(s)` };
+  await chrome.storage.local.set({ points: kept, held, status });
+  await updateBadge(withHeld(kept, held), now);
+  return status;
+}
+
 // An export file from the chart page: { points, orgNames, orgPlans, orgUsers, orgAliases } or a bare points array.
 // New points are added, labels from the file only fill gaps (local values win).
 async function importOnce(data) {
   const now = Date.now();
   try {
-    const stored = await chrome.storage.local.get(['points', ...ORG_MAPS]);
+    const stored = await chrome.storage.local.get(['points', 'held', ...ORG_MAPS]);
     const points = stored.points || [];
     const n = mergePoints(points, Array.isArray(data) ? data : data?.points);
     const maps = {};
@@ -407,7 +445,7 @@ async function importOnce(data) {
     }
     const status = { t: now, ok: true, msg: `imported ${n} new point(s)` };
     await chrome.storage.local.set({ points, ...maps, status });
-    await updateBadge(points, now);
+    await updateBadge(withHeld(points, stored.held), now);
     return status;
   } catch (e) {
     const status = { t: now, ok: false, msg: `import failed: ${e.message || e}` };
@@ -450,6 +488,6 @@ async function setBadge(text, color, title) {
 
 chrome.storage.onChanged.addListener(async ch => {
   if (!ch.selectedOrg && !ch.hiddenOrgs) return;
-  const { points = [] } = await chrome.storage.local.get('points');
-  updateBadge(points, Date.now());
+  const { points = [], held } = await chrome.storage.local.get(['points', 'held']);
+  updateBadge(withHeld(points, held), Date.now());
 });

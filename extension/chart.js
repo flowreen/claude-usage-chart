@@ -10,13 +10,15 @@ const HIDDEN_SERIES = ['Fable'];
 const ORG_MAPS = ['orgNames', 'orgPlans', 'orgUsers', 'orgAliases'];
 // week = the reset time of the period on screen (null = the newest), so a new period arriving while the page is
 // open does not move an older one out from under the reader.
-const state = { points: [], orgNames: {}, orgPlans: {}, orgUsers: {}, orgAliases: {}, hiddenOrgs: [], signedOut: new Set(), org: null, week: null, weeks: [], allMarkers: false };
+const state = { points: [], held: [], orgNames: {}, orgPlans: {}, orgUsers: {}, orgAliases: {}, hiddenOrgs: [], signedOut: new Set(), org: null, week: null, weeks: [], weekNames: [], allMarkers: false, drawn: 0 };
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const stored = await chrome.storage.local.get(['points', 'status', 'selectedOrg', 'hiddenOrgs', ...ORG_MAPS]);
+  const stored = await chrome.storage.local.get(['points', 'held', 'status', 'selectedOrg', 'hiddenOrgs', ...ORG_MAPS]);
   // Every point carries its account (org); anything without one is ignored.
   state.points = (stored.points || []).filter(p => p && p.org);
+  // The newest sample of each series while its value stands still: drawn as the last point, not stored as one.
+  state.held = Object.values(stored.held || {}).filter(p => p && p.org);
   for (const k of ORG_MAPS) state[k] = stored[k] || {};
   state.hiddenOrgs = Array.isArray(stored.hiddenOrgs) ? stored.hiddenOrgs : [];
   if (state.org === null && stored.selectedOrg) state.org = stored.selectedOrg;
@@ -53,10 +55,12 @@ function orgName(id) {
 const orgLabel = id => (state.orgPlans[id] ? `${orgName(id)} · ${state.orgPlans[id]}` : orgName(id));
 const acctLabel = id => `${orgLabel(id)}${state.signedOut.has(id) ? ' (signed out)' : ''}`;
 
+const samples = () => [...state.points, ...state.held];
+
 // Accounts ordered by most recent sample, so the one polled last is the default.
 function orgs() {
   const latest = new Map();
-  for (const p of state.points) {
+  for (const p of samples()) {
     if (!state.hiddenOrgs.includes(p.org)) latest.set(p.org, Math.max(latest.get(p.org) || 0, p.t));
   }
   return [...latest.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
@@ -109,12 +113,14 @@ function render() {
   acct.hidden = !os.length;
   $('rename').hidden = $('logout').hidden = !os.length;
 
-  const orgPts = state.points.filter(p => p.org === state.org);
+  state.drawn = Date.now();
+  const orgPts = samples().filter(p => p.org === state.org);
   const ws = weeks(orgPts);
   // Current = the reset reported by this account's newest sample, if still ahead.
   const newest = orgPts.reduce((a, p) => (!a || p.t > a.t ? p : a), null);
   const isCurrent = r => newest && Math.abs(r - newest.reset) < 6 * HOUR && r > Date.now();
   state.weeks = ws;
+  state.weekNames = [];
   const weekIdx = Math.max(0, ws.findIndex(r => state.week !== null && Math.abs(r - state.week) < 6 * HOUR));
   const sel = $('week');
   sel.innerHTML = '';
@@ -125,17 +131,19 @@ function render() {
     const start = periodStart(group[0]);
     const main = group.filter(p => p.key === 'All models' || p.key === MONTHLY_KEY).sort((a, b) => a.t - b.t);
     const res = r <= Date.now() && weekResult(main, r, Date.now(), start);
-    o.textContent = `${periodLabel(start, r)}${isCurrent(r) ? ' (current)' : ''}${res ? ` · rank ${res.grade}` : ''}`;
+    state.weekNames[i] = periodLabel(start, r);
+    o.textContent = `${state.weekNames[i]}${isCurrent(r) ? ' (current)' : ''}${res ? ` · rank ${res.grade}` : ''}`;
     sel.appendChild(o);
   });
   sel.value = weekIdx;
+  $('delete').hidden = !ws.length;
   $('count').textContent = `${state.points.length} points stored`;
   $('markers').setAttribute('aria-pressed', state.allMarkers);
 
   const charts = $('charts');
   charts.innerHTML = '';
   if (!ws.length) {
-    charts.innerHTML = '<div class="empty" style="flex:1">No samples yet. Stay logged in to claude.ai in this browser; the extension polls every 10 minutes.</div>';
+    charts.innerHTML = '<div class="empty" style="flex:1">No samples yet. Stay logged in to claude.ai in this browser; the extension polls every minute.</div>';
     layout();
     return;
   }
@@ -267,7 +275,7 @@ function panel(name, pts, end, start) {
     const anchor = { class: 'anchor', cx: X(start), cy: Y(0), r: 7 };
     el('polyline', { points: pts.map(p => `${X(p.t)},${Y(p.pct)}`).join(' '), fill: 'none',
                      stroke: 'var(--line)', 'stroke-width': 2 }, g);
-    const shown = state.allMarkers ? pts : spaced(pts, X, Y);
+    const shown = state.allMarkers ? pts : moved(pts);
     for (const p of shown) el('circle', { class: `dot dot-${sampleZone(p, end, start)}`, cx: X(p.t), cy: Y(p.pct), r: 5 }, g);
     el('circle', anchor, svg); // on the clip edge; drawn unclipped
     if (live) {
@@ -277,7 +285,8 @@ function panel(name, pts, end, start) {
   }
   div.appendChild(svg);
   if (pts.length) {
-    hover(div, svg, [{ t: start, pct: 0, anchor: true }, ...pts], X, Y, { L, R, T, B, W, H }, end, start, money && cash);
+    // filled: a stretch where usage stood still is read every 10 minutes, not only at its two ends
+    hover(div, svg, [{ t: start, pct: 0, anchor: true }, ...filled(pts)], X, Y, { L, R, T, B, W, H }, end, start, money && cash);
   }
 
   if (!pts.length) return div;
@@ -429,21 +438,10 @@ function hover(div, svg, pts, X, Y, box, end, start, cash) {
   });
 }
 
-// Markers at least MARKER_GAP px apart (dots are 10 px wide) unless "All markers" is on, so a poll every
-// 10 minutes does not smear them into a band. The newest sample always keeps its marker. Hover still reaches
-// every sample.
-const MARKER_GAP = 14;
-function spaced(pts, X, Y) {
-  const far = (a, b) => Math.hypot(X(a.t) - X(b.t), Y(a.pct) - Y(b.pct)) >= MARKER_GAP;
-  const out = [];
-  for (const p of pts) if (!out.length || far(p, out[out.length - 1])) out.push(p);
-  const last = pts[pts.length - 1];
-  if (out[out.length - 1] !== last) {
-    while (out.length > 1 && !far(last, out[out.length - 1])) out.pop();
-    out.push(last);
-  }
-  return out;
-}
+// Markers sit where the value moved, plus the first and the newest sample: a stretch where it stood still is
+// the line alone. Every move keeps its marker however close it lands to the last one (a series saves at most one
+// point a minute), so a climb of 1% a minute shows each step. "All markers" adds the samples that did not move.
+const moved = pts => pts.filter((p, i) => !i || i === pts.length - 1 || p.pct !== pts[i - 1].pct);
 
 $('account').onchange = async e => {
   if (e.target.value === ADD) {
@@ -489,6 +487,18 @@ $('logout').onclick = async () => {
   load();
 };
 $('week').onchange = e => { state.week = state.weeks[Number(e.target.value)] ?? null; render(); };
+// ✕: the period on screen leaves the stored points, for this account only. The worker deletes, like every
+// other change to the points.
+$('delete').onclick = async () => {
+  const i = Number($('week').value);
+  const reset = state.weeks[i];
+  if (reset === undefined) return;
+  const n = state.points.filter(p => p.org === state.org && Math.abs(p.reset - reset) < 6 * HOUR).length;
+  if (!confirm(`Delete the ${n} stored points of ${state.weekNames[i]} for ${orgName(state.org)}? This cannot be undone (Export JSON first to keep a copy).`)) return;
+  showStatus(await chrome.runtime.sendMessage({ type: 'delete', org: state.org, reset }).catch(err => ({ t: Date.now(), ok: false, msg: err.message })));
+  state.week = null;
+  load();
+};
 $('markers').onclick = () => { state.allMarkers = !state.allMarkers; render(); };
 $('export').onclick = () => {
   const maps = Object.fromEntries(ORG_MAPS.map(k => [k, state[k]]));
@@ -521,8 +531,12 @@ $('pollnow').onclick = async () => {
   }
   load();
 };
+// A poll that found every value as it was only renews `held`: the status line follows each one, the charts
+// every 10 minutes (a redraw closes an open menu).
 chrome.storage.onChanged.addListener(ch => {
-  if ((ch.points || ch.orgPlans || ch.orgUsers || ch.hiddenOrgs || ch.sessions) && $('rename-input').hidden) load();
+  const due = ch.held && Date.now() - state.drawn >= 10 * 6e4;
+  if ((ch.points || due || ch.orgPlans || ch.orgUsers || ch.hiddenOrgs || ch.sessions) && $('rename-input').hidden) load();
+  else if (ch.status) showStatus(ch.status.newValue);
 });
 // Status text or the rename box can change the page's height: refit then, and on every window resize.
 new ResizeObserver(fit).observe($('stage'));

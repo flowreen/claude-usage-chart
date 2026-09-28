@@ -1,12 +1,12 @@
 # Privacy Policy: Claude Weekly Usage Chart
 
-Last updated: 2026-09-21
+Last updated: 2026-09-28
 
 Claude Weekly Usage Chart is an unofficial browser extension. It is not made by, affiliated with, or endorsed by Anthropic.
 
 ## What the extension reads
 
-Every 10 minutes, and when you click "Poll now", the extension requests two claude.ai pages using the login you already have in your browser:
+Every minute, and when you click "Poll now", the extension requests two claude.ai pages using the login you already have in your browser:
 
 * `https://claude.ai/api/organizations`, to find your organization ID
 * `https://claude.ai/api/organizations/<id>/usage`, to read your weekly usage percentages and reset times
@@ -27,7 +27,7 @@ Nothing. The extension has no server, no analytics, and no third-party code. Dat
 
 ## Deleting your data
 
-Removing the extension deletes everything it stored.
+The ✕ button next to the period menu deletes the stored readings of the period on screen, for the account on screen. Removing the extension deletes everything it stored.
 
 ## Contact
 

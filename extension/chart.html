@@ -50,6 +50,7 @@
 
   /* zone band, dots, projection */
   .zone-band { fill: var(--band); stroke: var(--gold); stroke-opacity: .35; stroke-width: 1; }
+  .dot { stroke: var(--bg); stroke-width: 1.5; } /* dots a minute apart overlap: the rim keeps each one visible */
   .dot-under { fill: var(--dot); }
   .dot-zone { fill: var(--gold); }
   .dot-over { fill: var(--bad); }
@@ -126,6 +127,7 @@
     <button id="rename" title="Rename this account" hidden>✎ Rename</button>
     <button id="logout" title="Log this account out of claude.ai and remove it from the chart (its points stay; log in to it again to bring it back)" hidden>Log out</button>
     <select id="week" title="Period"></select>
+    <button id="delete" title="Delete the stored points of this period, for this account" hidden>✕</button>
   </div>
   <div class="charts" id="charts"></div>
   <div class="bottom">

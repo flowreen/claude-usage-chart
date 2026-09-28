@@ -15,7 +15,7 @@ Unofficial. Charts your claude.ai weekly limits over time against the ideal pace
 
 See how fast you are using your Claude weekly limits, not just where they stand right now.
 
-The extension records your claude.ai weekly usage every 10 minutes and draws your All models limit as a chart (the Fable cap is recorded too, not drawn). A dashed line shows the ideal pace, where usage would reach 100% exactly at the reset.
+The extension checks your claude.ai weekly usage every minute, records it each time it moves, and draws your All models limit as a chart (the Fable cap is recorded too, not drawn). A dashed line shows the ideal pace, where usage would reach 100% exactly at the reset.
 
 * Pace figure: how far ahead of or behind the ideal pace you are
 * Hover any point to see the exact percentage, time, and ideal value
@@ -39,7 +39,7 @@ Record the user's claude.ai weekly usage limits over time and chart them against
 
 * `storage`: saves usage readings and the last poll status locally so the chart can show history.
 * `unlimitedStorage`: history grows by a few points per hour for as long as the extension is installed; this keeps the default local storage quota from cutting off old weeks.
-* `alarms`: runs the usage check every 10 minutes while the browser is open.
+* `alarms`: runs the usage check every minute while the browser is open.
 * Host permission `https://claude.ai/api/organizations`: reads the user's organization ID, needed to build the usage URL.
 * Host permission `https://claude.ai/api/organizations/*/usage`: reads the weekly usage percentages and reset times that the chart displays.
 

@@ -50,10 +50,38 @@ function sampleZone(p, end, start) {
   return zoneOf(deviation(p, end, start), zonePts(end, start));
 }
 
+// Only the polls where the value moved are stored, with the last poll before each move: two neighbours of the
+// same value are the ends of a stretch where usage stood still. For the streaks and the projection that stretch
+// gets a sample every 10 minutes, so they read time and not the number of stored points.
+const PACE_FILL_MS = 10 * 6e4;
+function filled(pts) {
+  const out = [];
+  for (const p of pts) {
+    const a = out[out.length - 1];
+    if (a && a.pct === p.pct) for (let t = a.t + PACE_FILL_MS; t < p.t; t += PACE_FILL_MS) out.push({ ...a, t });
+    out.push(p);
+  }
+  return out;
+}
+
+// Mean distance from the ideal line over time, along the line the chart draws through the samples, so it does
+// not depend on how many of them are stored. Between two samples the distance is linear; where it changes sign
+// the two triangles are summed.
+function meanDeviation(pts, end, start) {
+  let area = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = deviation(pts[i - 1], end, start), b = deviation(pts[i], end, start);
+    const mean = a * b < 0 ? (a * a + b * b) / (2 * (Math.abs(a) + Math.abs(b))) : (Math.abs(a) + Math.abs(b)) / 2;
+    area += mean * (pts[i].t - pts[i - 1].t);
+  }
+  const span = pts[pts.length - 1].t - pts[0].t;
+  return span > 0 ? area / span : Math.abs(deviation(pts[0], end, start));
+}
+
 // Longest and current run of consecutive in-zone samples, in ms. pts sorted by t.
 function streaks(pts, end, start) {
   let best = 0, runStart = null, current = 0;
-  for (const p of pts) {
+  for (const p of filled(pts)) {
     if (sampleZone(p, end, start) === 'zone') {
       if (runStart === null) runStart = p.t;
       current = p.t - runStart;
@@ -71,7 +99,7 @@ function projection(pts, end, start = end - PACE_WEEK) {
   if (!pts.length) return null;
   const last = pts[pts.length - 1];
   const reached = pts.find(p => p.pct >= 100);
-  let first = pts.find(p => p.t >= last.t - 24 * PACE_HOUR);
+  let first = filled(pts).find(p => p.t >= last.t - 24 * PACE_HOUR);
   if (!first || last.t - first.t < 3 * PACE_HOUR) first = { t: start, pct: 0 };
   const span = last.t - first.t;
   const rate = span > 0 ? Math.max(0, (last.pct - first.pct) / span) : 0;
@@ -92,7 +120,7 @@ const PACE_BLOCK_WEIGHT = 0.5;
 function weekResult(pts, end, now, start) {
   if (!pts.length) return null;
   const live = end > now;
-  const avgDev = pts.reduce((s, p) => s + Math.abs(deviation(p, end, start)), 0) / pts.length;
+  const avgDev = meanDeviation(pts, end, start);
   const proj = projection(pts, end, start);
   const hitAt = proj.hitAt && proj.hitAt <= end ? proj.hitAt : null;
   const final = hitAt ? 100 : Math.min(100, live ? proj.projected : pts[pts.length - 1].pct);
@@ -120,5 +148,5 @@ const periodStart = p => (Number.isFinite(p.start) ? p.start : p.reset - PACE_WE
 
 if (typeof module !== 'undefined') {
   module.exports = { PACE_WEEK, PACE_HOUR, PACE_ZONE_MS, PACE_FINAL_DAY, idealAt, deviation, zonePts, zoneOf, finishWindow, sampleZone,
-                     streaks, projection, weekResult, periodStart, formatMoney };
+                     filled, meanDeviation, streaks, projection, weekResult, periodStart, formatMoney };
 }

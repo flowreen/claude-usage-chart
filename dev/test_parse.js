@@ -28,11 +28,11 @@ const { planLabel, parseMonthlySpend, accountLabel } = require('../extension/par
 
 // account name: what Claude calls you, else full name, else email
 const members = { memberships: [{ organization: { uuid: 'org-a' } }, { organization: { uuid: 'org-b' } }] };
-assert.deepStrictEqual(accountLabel({ display_name: 'Flo', full_name: 'Florin N', email_address: 'f@x.com', ...members }),
-  { name: 'Flo', orgIds: ['org-a', 'org-b'] });
-assert.strictEqual(accountLabel({ display_name: '  ', full_name: 'Florin N', email_address: 'f@x.com' }).name, 'Florin N');
-assert.strictEqual(accountLabel({ display_name: null, full_name: '', email_address: 'f@x.com' }).name, 'f@x.com');
-assert.deepStrictEqual(accountLabel({ email_address: 'f@x.com' }).orgIds, []);
+assert.deepStrictEqual(accountLabel({ display_name: 'User', full_name: 'User N', email_address: 'u@x.com', ...members }),
+  { name: 'User', orgIds: ['org-a', 'org-b'] });
+assert.strictEqual(accountLabel({ display_name: '  ', full_name: 'User N', email_address: 'u@x.com' }).name, 'User N');
+assert.strictEqual(accountLabel({ display_name: null, full_name: '', email_address: 'u@x.com' }).name, 'u@x.com');
+assert.deepStrictEqual(accountLabel({ email_address: 'u@x.com' }).orgIds, []);
 assert.strictEqual(accountLabel({}), null);
 assert.strictEqual(accountLabel(null), null);
 

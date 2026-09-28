@@ -38,6 +38,7 @@ let botCheck = false; // every request gets an HTML 403, like a Cloudflare chall
 let loginTo = null; // the browser signs in to this key right before the next plain request (a login landing mid-poll)
 const tabs = { reloaded: 0, created: [], updated: [] };
 const logouts = []; // keys the server was asked to log out
+let pointsWrites = 0; // storage writes that carried the points list
 const sessionOf = opts => {
   if (opts?.credentials !== 'omit') return jars[0].sessionKey;
   const r = rules.find(x => x.id === 1);
@@ -88,7 +89,7 @@ const ctx = {
     if (url.endsWith('/api/organizations')) return json(orgs);
     if (url.endsWith('/api/account')) {
       if (accountFails) return { ok: false, status: 404, json: async () => ({}) };
-      return json({ display_name: 'Flo', full_name: 'Florin N', email_address: 'f@x.com',
+      return json({ display_name: 'User', full_name: 'User N', email_address: 'u@x.com',
                     memberships: [{ organization: { uuid: 'org-a' } }, { organization: { uuid: 'org-b' } }] });
     }
     const m = url.match(/organizations\/([^/]+)\/usage$/);
@@ -108,7 +109,7 @@ const ctx = {
     storage: {
       local: {
         get: async keys => Object.fromEntries([].concat(keys).map(k => [k, structuredClone(store[k])])),
-        set: async o => Object.assign(store, structuredClone(o)),
+        set: async o => { if ('points' in o) pointsWrites++; Object.assign(store, structuredClone(o)); },
       },
       onChanged: ev('changed'),
     },
@@ -165,7 +166,7 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert.deepStrictEqual(store.orgNames, { 'org-a': 'Work', 'org-b': 'Personal', 'org-c': 'Acme' });
   assert.deepStrictEqual(store.orgPlans, { 'org-a': 'Max', 'org-b': 'Pro', 'org-c': 'Enterprise' });
   // the person's name goes to the orgs listed in their memberships only
-  assert.deepStrictEqual(store.orgUsers, { 'org-a': 'Flo', 'org-b': 'Flo' });
+  assert.deepStrictEqual(store.orgUsers, { 'org-a': 'User', 'org-b': 'User' });
   const monthly = store.points.find(p => p.org === 'org-c');
   assert.strictEqual(monthly.pct, 50);
   assert.strictEqual(monthly.used, 250);
@@ -209,19 +210,48 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   orgAPct = 47;
   const sAcct = await poll();
   assert(sAcct.ok, sAcct.msg);
-  assert.deepStrictEqual(store.orgUsers, { 'org-a': 'Flo', 'org-b': 'Flo' });
+  assert.deepStrictEqual(store.orgUsers, { 'org-a': 'User', 'org-b': 'User' });
   accountFails = false;
   assert.strictEqual(store.points.length, 3);
   const a1 = store.points.find(p => p.org === 'org-a');
   assert.strictEqual(a1.pct, 47);
   assert.strictEqual(a1.t, minuteStart + 40e3);
-  // next minute, value unchanged: still a new point for every series
+  // next minute, value unchanged: no point, the points list is not written, the sample is held
+  const seriesA = () => store.points.filter(p => p.org === 'org-a').map(p => [(p.t - minuteStart) / 1e3, p.pct]);
+  const written = pointsWrites;
   setClock(minuteStart + 70e3);
   await poll();
-  assert.strictEqual(store.points.length, 6);
-  assert.deepStrictEqual(store.points.filter(p => p.org === 'org-a').map(p => p.pct), [47, 47]);
-  // 100% inside the finish window (reset in 12 h) is the goal: badge gold like the chart's dot, not red "over"
+  assert.strictEqual(store.points.length, 3);
+  assert.strictEqual(pointsWrites, written, 'an unchanged poll does not rewrite the points');
+  assert.deepStrictEqual(Object.keys(store.held).sort(), ['org-a|All models', 'org-b|All models', 'org-c|Monthly spend']);
+  assert(Object.values(store.held).every(p => p.t === minuteStart + 70e3), 'held = the newest sample');
+  assert.strictEqual(store.status.t, minuteStart + 70e3);
+  // the value moves: the last poll that saw the old value is saved first, then the new value at its own minute
   setClock(minuteStart + 130e3);
+  orgAPct = 48;
+  await poll();
+  assert.deepStrictEqual(seriesA(), [[40, 47], [70, 47], [130, 48]]);
+  assert.strictEqual(store.points.length, 5, 'the series that stood still gained nothing');
+  assert.strictEqual(pointsWrites, written + 1);
+  assert.deepStrictEqual(Object.keys(store.held).sort(), ['org-b|All models', 'org-c|Monthly spend']);
+  // moving again at the very next poll: nothing was held in between, one new point
+  setClock(minuteStart + 190e3);
+  orgAPct = 49;
+  await poll();
+  assert.deepStrictEqual(seriesA(), [[40, 47], [70, 47], [130, 48], [190, 49]]);
+  // "Poll now" in the minute of a saved point replaces it, also when the value is the same
+  setClock(minuteStart + 200e3);
+  await poll();
+  assert.deepStrictEqual(seriesA(), [[40, 47], [70, 47], [130, 48], [200, 49]]);
+  // a held sample of the same minute as the move is still the end of the flat stretch
+  setClock(minuteStart + 250e3);
+  await poll();
+  setClock(minuteStart + 280e3);
+  orgAPct = 50;
+  await poll();
+  assert.deepStrictEqual(seriesA(), [[40, 47], [70, 47], [130, 48], [200, 49], [250, 49], [280, 50]]);
+  // 100% inside the finish window (reset in 12 h) is the goal: badge gold like the chart's dot, not red "over"
+  setClock(minuteStart + 330e3);
   orgADays = 0.5;
   orgAPct = 100;
   store.selectedOrg = 'org-a';
@@ -270,7 +300,8 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   jars[0].sessionKey = 'sk-2';
   const m1 = await tick();
   assert(m1.ok, m1.msg);
-  const polled = () => store.points.filter(p => p.t === store.status.t).map(p => p.org).sort();
+  // read in the last poll: saved as a point when the value moved, held when it stood still
+  const polled = () => [...store.points, ...Object.values(store.held)].filter(p => p.t === store.status.t).map(p => p.org).sort();
   assert.deepStrictEqual(polled(), ['org-a', 'org-b', 'org-c', 'org-d']);
   assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2', 'sk-a']);
   assert.strictEqual(store.orgUsers['org-d'], 'Alt');
@@ -281,7 +312,7 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   // the saved key stops working (logged out on claude.ai): reported and kept, the other account still polled
   delete live['sk-a'];
   const m2 = await tick();
-  assert(!m2.ok && /Flo: signed out/.test(m2.msg), m2.msg);
+  assert(!m2.ok && /User: signed out/.test(m2.msg), m2.msg);
   assert.deepStrictEqual(polled(), ['org-d']);
   assert.deepStrictEqual(store.sessions.map(s => s.key), ['sk-2', 'sk-a']);
   assert.strictEqual(store.sessions[1].failedSince, clock);
@@ -422,7 +453,7 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
 
   // dead keys: older keys of a working account vanish silently; two dead keys of one signed-out account = one line
   store.sessions.push(
-    { key: 'old1', name: 'Flo', orgIds: ['org-a', 'org-b', 'org-c'] }, { key: 'old2', name: 'Flo', orgIds: ['org-a', 'org-b', 'org-c'] },
+    { key: 'old1', name: 'User', orgIds: ['org-a', 'org-b', 'org-c'] }, { key: 'old2', name: 'User', orgIds: ['org-a', 'org-b', 'org-c'] },
     { key: 'bx1', name: 'Boss', orgIds: ['org-x'] }, { key: 'bx2', name: 'Boss', orgIds: ['org-x'] });
   const d1 = await tick();
   assert.strictEqual(d1.msg, 'ok; Boss: signed out (log in to it again, or Log out to hide it)');
@@ -444,6 +475,22 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert(/Alt: signed out/.test(f1.msg), f1.msg);
   assert.strictEqual(orgsOf('sk-2b'), 'org-d');
   live['sk-2b'] = 'two';
+
+  // ✕ on the chart page: one period of one account leaves the list with every series of it and its held sample;
+  // the account's other periods and the other accounts stay
+  const old = Date.now() - 10 * DAY;
+  const at = (org, key, reset) => ({ t: old - 3 * DAY, org, key, pct: 40, reset });
+  store.points.push(at('org-a', 'All models', old), at('org-a', 'Fable', old + 1e3), at('org-d', 'All models', old));
+  store.held['org-a|Fable'] = { ...at('org-a', 'Fable', old + 2e3), t: old - DAY };
+  const keep = store.points.length - 2;
+  const del = await send({ type: 'delete', org: 'org-a', reset: old });
+  assert(del.ok && del.msg === 'deleted 2 point(s)', del.msg);
+  assert.strictEqual(store.points.length, keep);
+  assert(!store.points.some(p => p.org === 'org-a' && Math.abs(p.reset - old) < DAY), 'the period is gone');
+  assert(store.points.some(p => p.org === 'org-d' && p.reset === old), 'another account keeps its period');
+  assert(store.points.some(p => p.org === 'org-a'), 'the account keeps its other periods');
+  assert(!('org-a|Fable' in store.held));
+  assert.notStrictEqual(badge.text, '?');
 
   console.log('poll tests passed');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -42,6 +42,24 @@ near(pr.rate * H, 1);
 near(pr.projected, 134);
 near(pr.hitAt, start + 134 * H);
 
+// stored points are sparse: 51% from 61h to 130h is two points, read like a sample every 10 minutes. The flat
+// line leaves the zone at 121.68h (ideal 72.43), so the streak from 60h ends with the 121h40 sample, and the
+// projection's 24 h window starts inside the stretch at 107h
+const sparse = [at(60, 40), at(61, 51), at(130, 51), at(131, 53)];
+assert.strictEqual(P.filled(sparse).length, 4 + 69 * 6 - 1);
+assert.strictEqual(P.streaks(sparse, end).best, 3700 * 6e4);
+assert.strictEqual(P.streaks(sparse, end).current, null);
+const sp = P.projection(sparse, end);
+near(sp.rate * H, 2 / 24);
+near(sp.projected, 53 + 37 * 2 / 24);
+// distance from the line is averaged over time: 8 above the line all along is 8, crossing it from +8 to -8 is 4,
+// 42h of each is 6, and points inside a stretch do not change it
+near(P.meanDeviation([at(42, 33), at(126, 83)], end), 8);
+near(P.meanDeviation([at(42, 33), at(126, 67)], end), 4);
+near(P.meanDeviation([at(42, 33), at(84, 58), at(126, 67)], end), 6);
+near(P.meanDeviation([at(42, 33), at(60, 33), at(126, 33)], end), P.meanDeviation([at(42, 33), at(126, 33)], end));
+near(P.meanDeviation([at(84, 58)], end), 8);
+
 // grades: 100% anywhere in the finish window (the last 36 h, where the zone band reaches 100%) is S
 const done = hitHour => P.weekResult([at(84, 50), at(hitHour, 100), at(167.9, 100)], end, end + H);
 assert.strictEqual(done(145).grade, 'S');      // 23h before reset
