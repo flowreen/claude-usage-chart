@@ -42,7 +42,10 @@
                   padding: 2px 7px; border-radius: 999px; background: linear-gradient(90deg, #7c3aed, #d4238f); }
   .pace { font-size: 20px; margin: 4px 0 0; }
   .sub { color: var(--muted); font-size: 13px; }
-  svg { width: 100%; height: auto; display: block; }
+  svg { width: 100%; height: auto; display: block; user-select: none; }
+  /* zoom (chart.js setView): a zoomed plot can be dragged */
+  svg.zoomed .hit { cursor: grab; }
+  body.panning, body.panning .hit { cursor: grabbing; user-select: none; }
   svg text { fill: var(--muted); font-size: 13px; }
   .bottom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; margin-top: 16px; }
   .status.bad { color: var(--bad); }

@@ -18,6 +18,8 @@ Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every minute, s
 
 ![Monthly spend: $247 of $500 in the zone, projected $467 at reset](docs/monthly.png)
 
+**Zoom.** The chart opens on the whole period. Scroll over it to zoom in or out around the pointer; zoomed in, drag to move and double-click to return to the whole period. Dots a minute apart, which overlap on the whole week, come apart once zoomed in.
+
 Screenshots come from `dev/demo.html?scenario=s`, `?scenario=a` and `?scenario=monthly`, rendered with synthetic data.
 
 ## Install (from this repo)

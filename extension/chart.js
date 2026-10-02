@@ -10,7 +10,9 @@ const HIDDEN_SERIES = ['Fable'];
 const ORG_MAPS = ['orgNames', 'orgPlans', 'orgUsers', 'orgAliases'];
 // week = the reset time of the period on screen (null = the newest), so a new period arriving while the page is
 // open does not move an older one out from under the reader.
-const state = { points: [], held: [], orgNames: {}, orgPlans: {}, orgUsers: {}, orgAliases: {}, hiddenOrgs: [], signedOut: new Set(), org: null, week: null, weeks: [], weekNames: [], allMarkers: false, drawn: 0 };
+// view = the zoom shared by every chart on the page (see setView); viewOf = the account and period it belongs to.
+const state = { points: [], held: [], orgNames: {}, orgPlans: {}, orgUsers: {}, orgAliases: {}, hiddenOrgs: [], signedOut: new Set(), org: null, week: null, weeks: [], weekNames: [], allMarkers: false, drawn: 0,
+                view: { k: 1, x: 0, y: 0 }, viewOf: null, redraws: [], drag: null };
 const $ = id => document.getElementById(id);
 
 async function load() {
@@ -142,12 +144,18 @@ function render() {
 
   const charts = $('charts');
   charts.innerHTML = '';
+  state.redraws = [];
   if (!ws.length) {
     charts.innerHTML = '<div class="empty" style="flex:1">No samples yet. Stay logged in to claude.ai in this browser; the extension polls every minute.</div>';
     layout();
     return;
   }
   const reset = ws[weekIdx];
+  // Another account or period opens on its whole period; a redraw for new samples keeps the zoom.
+  if (!state.viewOf || state.viewOf.org !== state.org || Math.abs(state.viewOf.reset - reset) >= 6 * HOUR) {
+    state.viewOf = { org: state.org, reset };
+    state.view = { k: 1, x: 0, y: 0 };
+  }
   const inWeek = orgPts.filter(p => Math.abs(p.reset - reset) < 6 * HOUR);
   const keys = [...new Set(inWeek.map(p => p.key))]
     .filter(k => !HIDDEN_SERIES.some(h => h.toLowerCase() === k.toLowerCase()))
@@ -202,92 +210,118 @@ function panel(name, pts, end, start) {
   const money = pts.length && Number.isFinite(pts[pts.length - 1].limit) ? pts[pts.length - 1] : null;
   const cash = pct => formatMoney(pct / 100 * money.limit, money.currency);
   const W = 820, H = 560, L = money ? 84 : 62, R = 16, T = 16, B = 40;
-  // The x axis is always the whole period, so the ideal line and the finish zone stay in view.
+  const PW = W - L - R, PH = H - T - B;
   const y1 = Math.max(100, ...pts.map(p => p.pct));
-  const X = t => L + (t - start) / (end - start) * (W - L - R);
-  const Y = v => H - B - v / y1 * (H - T - B);
-
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${name} usage chart` });
-  const clipId = 'c' + Math.random().toString(36).slice(2);
-  el('rect', { x: L, y: T, width: W - L - R, height: H - T - B }, el('clipPath', { id: clipId }, el('defs', {}, svg)));
-
-  const yStep = y1 > 100 ? 20 : y1 <= 30 ? 5 : 10;
-  for (let v = 0; v <= y1 + 1e-9; v += yStep) {
-    el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: 'var(--grid)' }, svg);
-    el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg).textContent = money
-      ? formatMoney(Math.round(v / 100 * money.limit), money.currency).replace(/\.00$/, '') : `${v}%`;
-  }
-  // Day gridlines for a week (weekday labels); weekly gridlines for a month (date labels), plus the end line.
   const days = Math.round((end - start) / 864e5);
-  const step = days <= 8 ? 1 : 7;
-  const ticks = [];
-  for (let d = 0; d < days; d += step) ticks.push(start + d * 864e5);
-  ticks.push(end);
-  for (const t of ticks) {
-    el('line', { x1: X(t), x2: X(t), y1: T, y2: H - B, stroke: 'var(--grid)' }, svg);
-    // Month ticks are dated in UTC like the period itself, else a UTC-minus reader sees "Aug 31" under "September".
-    if (t < end) el('text', { x: X(t), y: H - B + 22, 'text-anchor': 'middle' }, svg).textContent = step === 1
-      ? new Date(t).toLocaleDateString(undefined, { weekday: 'short' })
-      : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  }
-  el('line', { x1: L, x2: L, y1: T, y2: H - B, stroke: 'var(--axis)' }, svg);
-  el('line', { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: 'var(--axis)' }, svg);
-
-  const g = el('g', { 'clip-path': `url(#${clipId})` }, svg);
   // Finish window: reaching 100% anywhere in it is the top result (the last 36 h, where the zone band reaches
   // 100%, or the month's last working day).
   const fin = finishWindow(end, start);
   const finName = money ? 'last working day' : 'finish zone';
   const finIn = `${money ? 'on' : 'in'} the ${finName}`;
-  const fx = X(fin.start);
-  el('rect', { class: 'finish', x: fx, y: T, width: Math.max(0, X(fin.end) - fx), height: H - T - B }, g);
-  // bottom of the window, clear of the 100% dots
-  el('text', { class: 'finish-label', x: (fx + X(fin.end)) / 2, y: H - B - 10, 'text-anchor': money ? 'end' : 'middle' }, g)
-    .textContent = `🏁 ${finName}`;
-  if (money) g.lastChild.setAttribute('x', X(fin.end) - 4); // a one-day column in a month is narrow
   const Z = zonePts(end, start);
-  el('polygon', { class: 'zone-band', points: [[start, -Z], [end, 100 - Z], [end, 100 + Z], [start, Z]]
-    .map(([t, v]) => `${X(t)},${Y(v)}`).join(' ') }, g);
-  el('line', { x1: X(start), y1: Y(0), x2: X(end), y2: Y(100), stroke: 'var(--ideal)',
-               'stroke-width': 2, 'stroke-dasharray': '7 6' }, g);
-
   const live = end > Date.now();
   const last = pts[pts.length - 1];
   const lastZone = last && sampleZone(last, end, start);
   const proj = projection(pts, end, start);
   const period = money ? 'month' : 'week';
-  if (pts.length) {
-    // Projection to the reset, stopping where it would hit 100%.
-    if (live && proj.rate > 0) {
-      const hits = proj.hitAt && proj.hitAt < end;
-      const tx = hits ? proj.hitAt : end;
-      const ty = hits ? 100 : proj.projected;
-      const kind = !hits ? 'ok' : proj.hitAt < fin.start ? 'over' : 'goal';
-      el('line', { class: `proj proj-${kind}`,
-                   x1: X(last.t), y1: Y(last.pct), x2: X(tx), y2: Y(Math.min(ty, y1)) }, g);
-      el('circle', { class: 'proj-end', cx: X(tx), cy: Y(Math.min(ty, y1)), r: 4 }, g);
+  const legend = `x: ${period} time · y: ${money ? 'spend' : 'usage'} · dashed = ideal · band = zone · ${sampleCount(pts)}`;
+  const edge = t => new Date(t).toLocaleString(undefined, { ...(money ? { month: 'short', day: 'numeric' } : { weekday: 'short' }),
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  // filled: a stretch where usage stood still is read every 10 minutes, not only at its two ends
+  const hoverPts = pts.length ? [{ t: start, pct: 0, anchor: true }, ...filled(pts)] : [];
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${name} usage chart` });
+  const clipId = 'c' + Math.random().toString(36).slice(2);
+  const tip = document.createElement('div');
+  tip.className = 'tip';
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+
+  // Drawn again on every zoom step. Zoom 1 is the whole period, so the ideal line and the finish zone are in view.
+  const draw = () => {
+    const { k, x: vx, y: vy } = state.view;
+    const X = t => L + ((t - start) / (end - start) - vx) * k * PW;
+    const Y = v => H - B - (v / y1 - vy) * k * PH;
+    const t0 = start + vx * (end - start), t1 = t0 + (end - start) / k;
+    const v0 = vy * y1, v1 = v0 + y1 / k;
+    const inX = x => x >= L - 0.5 && x <= W - R + 0.5;
+    svg.replaceChildren();
+    svg.classList.toggle('zoomed', k > 1);
+    el('rect', { x: L, y: T, width: PW, height: PH }, el('clipPath', { id: clipId }, el('defs', {}, svg)));
+
+    // About ten value lines in view: every 10% on the whole period, every 20% above 100%.
+    const yStep = Math.min(20, niceStep(y1 / k / 10));
+    // Money labels in whole units when a line step is a whole amount or at least 10, else with cents ($27.50).
+    const unit = money && yStep / 100 * money.limit;
+    const whole = money && (unit >= 10 || Number.isInteger(+unit.toFixed(6)));
+    // max: Math.ceil(-1e-9) is -0, which the money format prints as "-$0"
+    for (let i = Math.max(0, Math.ceil(v0 / yStep - 1e-9)); i * yStep <= v1 + 1e-9; i++) {
+      const v = i * yStep;
+      el('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: 'var(--grid)' }, svg);
+      const amount = money && v / 100 * money.limit;
+      el('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, svg).textContent = money
+        ? formatMoney(whole ? Math.round(amount) : amount, money.currency).replace(/\.00$/, '')
+        : `${+v.toFixed(3)}%`;
     }
-    // Usage is 0% at the reset, so the period start is a known point even before the first sample.
-    // The stretch to the first sample was not observed: faint dashes.
-    if (pts[0].t - start > HOUR) {
-      el('line', { class: 'gap', x1: X(start), y1: Y(0), x2: X(pts[0].t), y2: Y(pts[0].pct) }, g);
+    for (const [t, label] of timeTicks(t0, t1, start, end, days)) {
+      const x = X(t);
+      if (!inX(x)) continue;
+      el('line', { x1: x, x2: x, y1: T, y2: H - B, stroke: 'var(--grid)' }, svg);
+      if (x <= W - R - 16) el('text', { x, y: H - B + 22, 'text-anchor': 'middle' }, svg).textContent = label;
     }
-    const anchor = { class: 'anchor', cx: X(start), cy: Y(0), r: 7 };
-    el('polyline', { points: pts.map(p => `${X(p.t)},${Y(p.pct)}`).join(' '), fill: 'none',
-                     stroke: 'var(--line)', 'stroke-width': 2 }, g);
-    const shown = state.allMarkers ? pts : moved(pts);
-    for (const p of shown) el('circle', { class: `dot dot-${sampleZone(p, end, start)}`, cx: X(p.t), cy: Y(p.pct), r: 5 }, g);
-    el('circle', anchor, svg); // on the clip edge; drawn unclipped
-    if (live) {
-      el('circle', { class: `pulse pulse-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
-      el('circle', { class: `now now-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
+    if (inX(X(end))) el('line', { x1: X(end), x2: X(end), y1: T, y2: H - B, stroke: 'var(--grid)' }, svg);
+    el('line', { x1: L, x2: L, y1: T, y2: H - B, stroke: 'var(--axis)' }, svg);
+    el('line', { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: 'var(--axis)' }, svg);
+
+    const g = el('g', { 'clip-path': `url(#${clipId})` }, svg);
+    const fx = X(fin.start);
+    el('rect', { class: 'finish', x: fx, y: T, width: Math.max(0, X(fin.end) - fx), height: PH }, g);
+    // bottom of the window, clear of the 100% dots
+    el('text', { class: 'finish-label', x: (fx + X(fin.end)) / 2, y: H - B - 10, 'text-anchor': money ? 'end' : 'middle' }, g)
+      .textContent = `🏁 ${finName}`;
+    if (money) g.lastChild.setAttribute('x', X(fin.end) - 4); // a one-day column in a month is narrow
+    el('polygon', { class: 'zone-band', points: [[start, -Z], [end, 100 - Z], [end, 100 + Z], [start, Z]]
+      .map(([t, v]) => `${X(t)},${Y(v)}`).join(' ') }, g);
+    el('line', { x1: X(start), y1: Y(0), x2: X(end), y2: Y(100), stroke: 'var(--ideal)',
+                 'stroke-width': 2, 'stroke-dasharray': '7 6' }, g);
+
+    if (pts.length) {
+      // Projection to the reset, stopping where it would hit 100%.
+      if (live && proj.rate > 0) {
+        const hits = proj.hitAt && proj.hitAt < end;
+        const tx = hits ? proj.hitAt : end;
+        const ty = hits ? 100 : proj.projected;
+        const kind = !hits ? 'ok' : proj.hitAt < fin.start ? 'over' : 'goal';
+        el('line', { class: `proj proj-${kind}`,
+                     x1: X(last.t), y1: Y(last.pct), x2: X(tx), y2: Y(Math.min(ty, y1)) }, g);
+        el('circle', { class: 'proj-end', cx: X(tx), cy: Y(Math.min(ty, y1)), r: 4 }, g);
+      }
+      // Usage is 0% at the reset, so the period start is a known point even before the first sample.
+      // The stretch to the first sample was not observed: faint dashes.
+      if (pts[0].t - start > HOUR) {
+        el('line', { class: 'gap', x1: X(start), y1: Y(0), x2: X(pts[0].t), y2: Y(pts[0].pct) }, g);
+      }
+      const anchor = { class: 'anchor', cx: X(start), cy: Y(0), r: 7 };
+      el('polyline', { points: pts.map(p => `${X(p.t)},${Y(p.pct)}`).join(' '), fill: 'none',
+                       stroke: 'var(--line)', 'stroke-width': 2 }, g);
+      const shown = state.allMarkers ? pts : moved(pts);
+      for (const p of shown) el('circle', { class: `dot dot-${sampleZone(p, end, start)}`, cx: X(p.t), cy: Y(p.pct), r: 5 }, g);
+      // On the clip edge at zoom 1, so drawn unclipped there; zoomed, the plot edge clips it like any point.
+      el('circle', anchor, vx || vy ? g : svg);
+      if (live) {
+        el('circle', { class: `pulse pulse-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
+        el('circle', { class: `now now-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
+      }
+      hover(div, svg, tip, hoverPts, X, Y, { L, R, T, B, W, H }, end, start, money && cash);
     }
-  }
+    sub.textContent = k === 1 ? `${legend} · scroll to zoom`
+      : `${edge(t0)} to ${edge(t1)} · ${k < 10 ? k.toFixed(1) : Math.round(k)}x · drag to move, double-click for the whole ${period}`;
+  };
+  draw();
+  state.redraws.push(draw);
+  zoomable(svg, { L, PW, PH, H, B });
   div.appendChild(svg);
-  if (pts.length) {
-    // filled: a stretch where usage stood still is read every 10 minutes, not only at its two ends
-    hover(div, svg, [{ t: start, pct: 0, anchor: true }, ...filled(pts)], X, Y, { L, R, T, B, W, H }, end, start, money && cash);
-  }
+  if (pts.length) div.appendChild(tip);
 
   if (!pts.length) return div;
   const result = weekResult(pts, end, Date.now(), start);
@@ -337,9 +371,6 @@ function panel(name, pts, end, start) {
     line1.textContent = `${st.best >= HOUR ? `best streak ${fmtDur(st.best)}` : 'no streak'} · ${result.avgDev.toFixed(1)}% off the ideal line on average`;
     stats.appendChild(line1);
     div.appendChild(stats);
-    const sub = document.createElement('div');
-    sub.className = 'sub';
-    sub.textContent = `x: ${period} time · y: ${money ? 'spend' : 'usage'} · dashed = ideal · band = zone · ${sampleCount(pts)}`;
     div.appendChild(sub);
     return div;
   }
@@ -372,10 +403,6 @@ function panel(name, pts, end, start) {
   }
   div.appendChild(stats);
   if (live && lastZone === 'zone') div.classList.add('in-zone');
-
-  const sub = document.createElement('div');
-  sub.className = 'sub';
-  sub.textContent = `x: ${period} time · y: ${money ? 'spend' : 'usage'} · dashed = ideal · band = zone · ${sampleCount(pts)}`;
   div.appendChild(sub);
   return div;
 }
@@ -389,29 +416,119 @@ function fmtDur(ms) {
 
 const fmtWhen = t => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-// Hovering anywhere over the plot snaps to the nearest sample and shows its exact value.
-function hover(div, svg, pts, X, Y, box, end, start, cash) {
+// Time grid for the part of the period in view, about eight lines at most: whole days (a week) or weeks (a month)
+// counted from the period start, as on the whole period; zoomed in to four days or less, local clock times.
+const CLOCK_STEPS = [5, 10, 15, 30, 60, 120, 180, 360, 720]; // minutes
+function timeTicks(t0, t1, start, end, days) {
+  const out = [];
+  const min = CLOCK_STEPS.find(m => t1 - t0 <= 8 * m * 6e4);
+  if (!min) {
+    const step = [1, 2, 7].find(s => t1 - t0 <= 8 * s * 864e5) ?? 7;
+    for (let d = Math.ceil((t0 - start) / 864e5 / step - 1e-9) * step; d < days && start + d * 864e5 <= t1; d += step) {
+      const t = start + d * 864e5;
+      // Month ticks are dated in UTC like the period itself, else a UTC-minus reader sees "Aug 31" under "September".
+      out.push([t, days > 8 ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
+        : new Date(t).toLocaleDateString(undefined, { weekday: 'short' })]);
+    }
+    return out;
+  }
+  const c = new Date(t0);
+  c.setHours(0, Math.floor((c.getHours() * 60 + c.getMinutes()) / min) * min, 0, 0);
+  for (; c.getTime() <= t1; c.setMinutes(c.getMinutes() + min)) {
+    const t = c.getTime();
+    // Midnight is named by its day, every other line by its time.
+    if (t >= t0 && t < end) out.push([t, c.getHours() || c.getMinutes()
+      ? c.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      : c.toLocaleDateString(undefined, days > 8 ? { month: 'short', day: 'numeric' } : { weekday: 'short' })]);
+  }
+  return out;
+}
+
+// 1, 2 or 5 times a power of ten: the smallest one at least x.
+function niceStep(x) {
+  const p = 10 ** Math.floor(Math.log10(x));
+  return [1, 2, 5, 10].map(m => m * p).find(s => s >= x * (1 - 1e-9));
+}
+
+// Zoom: k = magnification (1 = the whole period), x / y = the view's left / bottom edge as a share of the whole
+// period / of the whole value range. Same in both directions, so the ideal line keeps its slope and 1% steps a
+// minute apart move apart; kept inside the whole period. One view for every chart on the page.
+const ZOOM_MAX = 50;
+let redrawDue = false;
+function setView(k, x, y) {
+  // Snapped to 1: as many notches out as in can leave 1.0000000000000002.
+  k = k < 1 + 1e-9 ? 1 : Math.min(ZOOM_MAX, k);
+  const room = 1 - 1 / k;
+  x = Math.min(room, Math.max(0, x));
+  y = Math.min(room, Math.max(0, y));
+  const v = state.view;
+  if (v.k === k && v.x === x && v.y === y) return;
+  state.view = { k, x, y };
+  if (redrawDue) return;
+  redrawDue = true;
+  requestAnimationFrame(() => { redrawDue = false; for (const f of state.redraws) f(); });
+}
+
+// The wheel zooms around the pointer, a drag moves the zoomed view, a double-click returns to the whole period.
+function zoomable(svg, b) {
+  // The pointer as a share of the plot, from its left and from its bottom edge; null outside the plot.
+  const at = e => {
+    const m = svg.getScreenCTM();
+    if (!m) return null;
+    const a = ((e.clientX - m.e) / m.a - b.L) / b.PW, c = (b.H - b.B - (e.clientY - m.f) / m.d) / b.PH;
+    return a >= 0 && a <= 1 && c >= 0 && c <= 1 ? { a, c, m } : null;
+  };
+  svg.addEventListener('wheel', e => {
+    const p = at(e);
+    if (!p) return;
+    e.preventDefault();
+    const { k, x, y } = state.view;
+    const k2 = Math.min(ZOOM_MAX, Math.max(1, k * Math.exp(-e.deltaY / 300)));
+    setView(k2, x + p.a / k - p.a / k2, y + p.c / k - p.c / k2);
+  }, { passive: false });
+  svg.addEventListener('pointerdown', e => {
+    const p = e.button === 0 && state.view.k > 1 && at(e);
+    if (!p) return;
+    e.preventDefault();
+    state.drag = { x: e.clientX, y: e.clientY, view: state.view, sx: 1 / (p.m.a * b.PW), sy: 1 / (p.m.d * b.PH) };
+    document.body.classList.add('panning');
+  });
+  svg.addEventListener('dblclick', e => { if (at(e)) setView(1, 0, 0); });
+}
+// On the window, so a drag survives leaving the chart and a redraw for new samples.
+addEventListener('pointermove', e => {
+  const d = state.drag;
+  if (d) setView(d.view.k, d.view.x - (e.clientX - d.x) * d.sx / d.view.k, d.view.y + (e.clientY - d.y) * d.sy / d.view.k);
+});
+const endDrag = () => { state.drag = null; document.body.classList.remove('panning'); };
+addEventListener('pointerup', endDrag);
+addEventListener('pointercancel', endDrag);
+
+// Hovering anywhere over the plot snaps to the nearest sample in view and shows its exact value. Built again on
+// every zoom step; pointer keeps the last position over a plot, so the tip follows the chart under a still pointer.
+let pointer = null;
+function hover(div, svg, tip, pts, X, Y, box, end, start, cash) {
   const ring = el('circle', { r: 9, fill: 'none', stroke: 'var(--fg)', 'stroke-width': 2, visibility: 'hidden',
                               'pointer-events': 'none' }, svg);
   const guide = el('line', { y1: box.T, y2: box.H - box.B, stroke: 'var(--axis)', 'stroke-dasharray': '3 4',
                              visibility: 'hidden', 'pointer-events': 'none' }, svg);
-  const tip = document.createElement('div');
-  tip.className = 'tip';
-  div.appendChild(tip);
-  const area = el('rect', { x: box.L, y: box.T, width: box.W - box.L - box.R, height: box.H - box.T - box.B,
+  const area = el('rect', { class: 'hit', x: box.L, y: box.T, width: box.W - box.L - box.R, height: box.H - box.T - box.B,
                             fill: 'transparent' }, svg);
 
   const hide = () => { ring.setAttribute('visibility', 'hidden'); guide.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; };
-  area.addEventListener('pointerleave', hide);
-  area.addEventListener('pointermove', e => {
+  const inBox = (x, y) => x >= box.L - 0.5 && x <= box.W - box.R + 0.5 && y >= box.T - 0.5 && y <= box.H - box.B + 0.5;
+  const show = (clientX, clientY) => {
     const m = svg.getScreenCTM();
-    if (!m) return;
-    const sx = (e.clientX - m.e) / m.a, sy = (e.clientY - m.f) / m.d;
-    let best = pts[0], bd = Infinity;
+    if (!m || state.drag) { hide(); return; }
+    const sx = (clientX - m.e) / m.a, sy = (clientY - m.f) / m.d;
+    let best = null, bd = Infinity;
     for (const p of pts) {
-      const d = (X(p.t) - sx) ** 2 + ((Y(p.pct) - sy) * 0.3) ** 2; // mostly by time
+      const x = X(p.t), y = Y(p.pct);
+      if (!inBox(x, y)) continue;
+      const d = (x - sx) ** 2 + ((y - sy) * 0.3) ** 2; // mostly by time
       if (d < bd) { bd = d; best = p; }
     }
+    if (!best) { hide(); return; }
     const cx = X(best.t), cy = Y(best.pct);
     ring.setAttribute('cx', cx); ring.setAttribute('cy', cy); ring.setAttribute('visibility', 'visible');
     guide.setAttribute('x1', cx); guide.setAttribute('x2', cx); guide.setAttribute('visibility', 'visible');
@@ -435,7 +552,11 @@ function hover(div, svg, pts, X, Y, box, end, start, cash) {
     const flip = px + tip.offsetWidth + 16 > div.offsetWidth;
     tip.style.left = `${flip ? px - tip.offsetWidth - 14 : px + 14}px`;
     tip.style.top = `${Math.max(0, py - tip.offsetHeight - 10)}px`;
-  });
+  };
+  area.addEventListener('pointerleave', () => { pointer = null; hide(); });
+  area.addEventListener('pointermove', e => { pointer = { svg, x: e.clientX, y: e.clientY }; show(e.clientX, e.clientY); });
+  hide();
+  if (pointer && pointer.svg === svg) show(pointer.x, pointer.y);
 }
 
 // Markers sit where the value moved, plus the first and the newest sample: a stretch where it stood still is
