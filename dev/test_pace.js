@@ -92,12 +92,13 @@ assert.strictEqual(live.live, true);
 assert.strictEqual(live.grade, 'S');
 
 // monthly period: UTC calendar month like the product. Run this file under several TZ values.
-// May 2026: May 31 is a Sunday, so the last working day is Friday May 29, covered in local time.
+// May 2026: May 31 is a Sunday, so the window starts on the last working day, Friday May 29 in local time, and runs
+// through the weekend to the reset.
 const mStart = Date.UTC(2026, 4, 1), mEnd = Date.UTC(2026, 5, 1);
 const local = (d, h = 12) => new Date(2026, 4, d, h).getTime();
 const fin = P.finishWindow(mEnd, mStart);
 assert.strictEqual(fin.start, new Date(2026, 4, 29).getTime());
-assert.strictEqual(fin.end, new Date(2026, 4, 30).getTime());
+assert.strictEqual(fin.end, mEnd);
 // August 2026 ends on Monday the 31st: the window is the full 36 h before the UTC reset, whatever the local clock
 const augEnd = Date.UTC(2026, 8, 1), augStart = Date.UTC(2026, 7, 1);
 const aug = P.finishWindow(augEnd, augStart);
@@ -115,9 +116,9 @@ const mRank = hitT => P.weekResult([{ t: local(10), pct: 30 }, { t: hitT, pct: 1
 assert.strictEqual(mRank(local(29, 9)).grade, 'S');        // Friday morning
 assert.strictEqual(mRank(local(29, 23)).grade, 'S');       // Friday late
 assert.strictEqual(mRank(local(29, 9)).onFinalDay, true);
-assert.strictEqual(mRank(local(30, 10)).grade, 'A');       // Saturday: after the last working day
-assert.strictEqual(mRank(local(30, 10)).afterFinish, true);
-assert.strictEqual(mRank(local(31, 10)).grade, 'A');       // Sunday
+assert.strictEqual(mRank(local(30, 10)).grade, 'S');       // Saturday: the weekend is part of the window
+assert.strictEqual(mRank(local(30, 10)).onFinalDay, true);
+assert.strictEqual(mRank(local(31, 10)).grade, 'S');       // Sunday
 // early on a month costs its share of 31 days, not a rank per day
 assert.strictEqual(mRank(local(28, 15)).grade, 'A');       // Thursday
 assert.strictEqual(mRank(local(25, 15)).grade, 'A');       // Monday: 3.4 days blocked, score 94.6
@@ -131,5 +132,47 @@ assert.strictEqual(P.sampleZone(mAt(15, 52), mEnd, mStart), 'zone');
 assert.strictEqual(P.sampleZone({ t: end - 3 * 864e5, pct: 90 }, end), 'over'); // weekly: 4 days in, ideal 57
 assert.strictEqual(P.periodStart({ reset: end }), end - P.PACE_WEEK);
 assert.strictEqual(P.periodStart({ reset: end, start: mStart }), mStart);
+
+// burn: stored points are the moves, each with the poll a minute before it (m = minutes into the week)
+const MIN = 6e4, m = (min, pct) => ({ t: start + min * MIN, pct });
+// a move at 101, then 299 minutes without one = the longest gap: the session starts at the poll before the 400 move
+const burnPts = [m(10, 4), m(100, 4), m(101, 5), m(399, 5), m(400, 6), m(429, 6), m(430, 7), m(439, 7), m(440, 8), m(460, 8)];
+const ses = P.burnSession(burnPts, start + 460 * MIN);
+assert.strictEqual(ses.from, start + 399 * MIN);
+assert.strictEqual(ses.used, 3);
+near(ses.perMin, 3 / 61);
+// it still runs 2 h after the last move; more than 4 h after it nothing burns
+assert.notStrictEqual(P.burnSession(burnPts, start + 440 * MIN + 2 * H + MIN), null);
+assert.strictEqual(P.burnSession(burnPts, start + 440 * MIN + 4 * H + MIN), null);
+// a real Saturday (minutes from Friday 00:00): the longest break of the last 24 h is the night 02:56 to 07:28,
+// not the 2 h 08 before 12:41; the 17.9 h gap before Friday 17:54 ended over 24 h ago and does not count
+const sat = [m(0, 0)];
+[1074, 1216, 1229, 1403, 1432, 1547, 1616, 1888, 2073, 2201, 2317].forEach((t, k) => sat.push(m(t - 1, k), m(t, k + 1)));
+assert.strictEqual(P.burnSession(sat, start + 2520 * MIN).from, start + 1887 * MIN);
+// a first move with no poll a minute before it (browser closed) climbed at an unknown time: not counted
+const ses2 = P.burnSession([m(10, 4), m(300, 6), m(339, 6), m(340, 7)], start + 340 * MIN);
+assert.strictEqual(ses2.from, start + 300 * MIN);
+assert.strictEqual(ses2.used, 1);
+// peak: the fastest pair of neighbouring moves both timed to the minute, 430 to 440 = 1% in 10 minutes
+const pk = P.burnPeak(burnPts);
+near(pk.perMin, 0.1);
+assert.strictEqual(pk.at, start + 440 * MIN);
+// a step between polls 10 minutes apart is not timed, so it makes no peak
+assert.strictEqual(P.burnPeak([m(100, 1), m(101, 2), m(200, 2), m(210, 4)]), null);
+
+// $ per 1% from imported Claude Code dollars per minute: a move every 100 minutes, $20 logged in every stretch
+const climb = [m(0, 0)];
+for (let i = 1; i <= 6; i++) climb.push(m(i * 100 - 1, i - 1), m(i * 100, i));
+const mins = k => Math.floor((start + k * MIN) / 6e4);
+const logged = [150, 250, 350, 450, 550].map(k => [mins(k), 20]);
+const span = { from: start, to: start + 700 * MIN };
+const rate = P.measuredRate(climb, logged, span);
+near(rate.usdPerPct, 20);
+assert.strictEqual(rate.covered, 5);
+// nothing logged in two of five stretches (other computer, deleted transcripts): too little covered, no figure
+assert.strictEqual(P.measuredRate(climb, logged.filter((_, i) => i % 2 === 0), span), null);
+// stretches after the import are not counted: four stretches left = under the 5 points needed
+assert.strictEqual(P.measuredRate(climb, logged, { from: start, to: start + 550 * MIN }), null);
+assert.strictEqual(P.measuredRate(climb, [], span), null);
 
 console.log('pace tests passed');

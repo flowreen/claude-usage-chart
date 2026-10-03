@@ -6,6 +6,7 @@
 <script>
 (async () => {
   const loadScript = src => new Promise(r => { const s = document.createElement('script'); s.src = src; s.onload = r; document.body.appendChild(s); });
+  await loadScript('../extension/parse.js'); // chart.js reads imported Claude Code logs with it
   await loadScript('../extension/pace.js'); // demo data uses finishWindow
   const H = 36e5;
   const points = [];
@@ -61,7 +62,7 @@
   }
   // ?scenario=s | a | monthly: the README pictures. s = a finished week that wandered under, over and back into
   // the zone (every dot colour) and hit 100% in the finish zone; a = a finished week that hit 100% almost two days
-  // early; monthly = a live Enterprise month.
+  // early; monthly = a live Enterprise month. burn and welcome: below.
   const scenario = new URLSearchParams(location.search).get('scenario');
   if (scenario === 's' || scenario === 'a') {
     points.length = 0;
@@ -101,10 +102,39 @@
                     used: Math.round(pct * 5 * 100) / 100, limit: 500, currency: 'USD' });
     }
   }
-  const store = { points, orgNames: { 'org-a': "user@example.com's Organization", 'org-b': 'Personal', 'org-c': 'Acme Corp' },
+  // ?scenario=burn: the store picture. A live Max 20x week in its finish zone; the days before today step every 2 h,
+  // today is stored like the extension does it, each move with the poll a minute before it: work from 09:05, a lunch
+  // pause, a fast stretch after it (the peak), so the 🔥 line shows a session since the morning and dollars.
+  const held = {};
+  if (scenario === 'burn') {
+    points.length = 0;
+    const today = new Date(Date.now()).setHours(9, 0, 0, 0);
+    const end = new Date(today + 2 * 864e5).setHours(1, 0, 0, 0), start = end - 7 * 864e5;
+    const base = 56; // % at 09:00 today
+    for (let t = start + 2 * H; t < today; t += 2 * H) {
+      points.push({ t, org: 'org-a', key: 'All models', pct: Math.round(base * worked(start, t) / worked(start, today)), reset: end });
+    }
+    // minutes after 09:00 when the percent moves: steady, lunch 12:05 to 12:55, a fast stretch, steady again
+    const steps = [];
+    for (let m = 5; m < 186; m += 22) steps.push(m);
+    for (let m = 235; m < 260; m += 20) steps.push(m);
+    for (let m = 266; m < 316; m += 6) steps.push(m);
+    for (let m = 330; today + m * 6e4 <= Date.now(); m += 18) steps.push(m);
+    let pct = base;
+    for (const m of steps) {
+      const t = today + m * 6e4;
+      points.push({ t: t - 6e4, org: 'org-a', key: 'All models', pct, reset: end }, { t, org: 'org-a', key: 'All models', pct: ++pct, reset: end });
+    }
+    held['org-a|All models'] = { t: Date.now(), org: 'org-a', key: 'All models', pct, reset: end };
+  }
+  // ?scenario=welcome: the welcome page picture (docs/welcome.png), nothing stored and no login
+  const welcomeOnly = scenario === 'welcome';
+  if (welcomeOnly) points.length = 0;
+  const store = { points, held, orgNames: { 'org-a': "user@example.com's Organization", 'org-b': 'Personal', 'org-c': 'Acme Corp' },
                   orgUsers: { 'org-a': 'Personal', 'org-c': 'Personal' },
                   orgPlans: { 'org-a': 'Max 20x', 'org-b': 'Pro', 'org-c': 'Enterprise' },
-                  status: { t: Date.now(), ok: true, msg: 'demo data' } };
+                  status: welcomeOnly ? { t: Date.now(), ok: false, auth: true, msg: 'not logged in to claude.ai (HTTP 403, permission_error)' }
+                    : { t: Date.now(), ok: true, msg: 'demo data' } };
   window.chrome = {
     storage: {
       local: {

@@ -50,6 +50,16 @@
   .bottom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; margin-top: 16px; }
   .status.bad { color: var(--bad); }
   .empty { color: var(--muted); text-align: center; padding: 48px 0; }
+  /* first run, nothing charted yet (chart.js welcome): the next step */
+  .welcome { flex: 0 1 560px; margin: 40px 16px; padding: 28px 32px; text-align: center; background: var(--btn);
+             border: 1px solid var(--btn-border); border-radius: 14px; }
+  .welcome h2 { font-size: 22px; margin: 0 0 8px; }
+  .welcome .lead { margin: 0 0 20px; }
+  .welcome .primary { font-size: 17px; font-weight: 600; padding: 10px 26px; color: #10131f; background: var(--dot);
+                      border-color: var(--dot); }
+  .welcome .opt { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
+  .bottom .primary { font-weight: 600; color: #10131f; background: var(--dot); border-color: var(--dot); }
+  .link { padding: 0; color: var(--dot); background: none; border: none; text-decoration: underline; }
 
   /* zone band, dots, projection */
   .zone-band { fill: var(--band); stroke: var(--gold); stroke-opacity: .35; stroke-width: 1; }
@@ -138,11 +148,13 @@
     <button id="export">Export JSON</button>
     <button id="import">Import</button>
     <button id="pollnow">Poll now</button>
+    <button id="sync" title="Pick (or drop on this page) the .claude folder in your user folder: Claude Code's logs are then read in your browser on every poll, only dollars per minute are kept, to measure what 1% of your weekly limit is worth" hidden>Sync with Claude folder</button>
     <input id="file" type="file" accept="application/json,.json" hidden>
     <span class="sub" id="count"></span>
     <span class="sub status" id="status"></span>
   </div>
   </div>
+  <script src="parse.js"></script>
   <script src="pace.js"></script>
   <script src="chart.js"></script>
 </body>

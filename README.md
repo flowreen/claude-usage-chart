@@ -14,24 +14,30 @@ Unofficial Chrome extension (MV3). Polls claude.ai weekly limits every minute, s
 
 ![Rank A: 100% reached a day and a half before the reset](docs/rank-a.png)
 
-**Monthly spend limit.** Seats with only a monthly $ cap (Enterprise) get one chart in money instead of percent. The period is the calendar month and the finish window is its last working day. Live periods show the pace, the current streak and where the spend is projected to land at the reset.
+**Monthly spend limit.** Seats with only a monthly $ cap (Enterprise) get one chart in money instead of percent. The period is the calendar month and the finish window is its last working day (through the weekend when the month ends on one). Live periods show the pace, the current streak and where the spend is projected to land at the reset.
 
 ![Monthly spend: $247 of $500 in the zone, projected $467 at reset](docs/monthly.png)
 
 **Zoom.** The chart opens on the whole period. Scroll over it to zoom in or out around the pointer; zoomed in, drag to move and double-click to return to the whole period. Dots a minute apart, which overlap on the whole week, come apart once zoomed in.
 
-Screenshots come from `dev/demo.html?scenario=s`, `?scenario=a` and `?scenario=monthly`, rendered with synthetic data.
+**Burn.** 🔥 "This session burned ..." counts from the end of the longest break of the last 24 hours (for most people the night) to now, with the rate per minute; 4 hours without a move ends the session. The peak is the fastest climb between two moves that are both timed to the minute (data polled every minute, on both sides of the climb), to the second.
+
+**Dollars.** claude.ai reports plan limits only in whole percent, with no tokens or dollars, so the "All models" chart prices them at API list rates: "≈ $1,425 of $1,900 · Pace ...", the session burn and the share left unused. Until your own logs measure it, 1% of Max 20x ≈ $19 and of Max 5x ≈ $8.60, from Reddit audits that priced usage logs against the meter (September 2026; 5x = 20x over the 2.2x weekly ratio measured between the plans). Other plans stay in percent; monthly spend is in real money. **Sync with Claude folder** (click it once, or drop your `.claude` folder on the page) lets the extension read Claude Code's logs in your browser on every poll: each call priced at list, only dollars per minute kept, and kept after you delete the conversations. Once the logged calls cover at least 80% of a week's climb (5 points or more), the chart uses your measured value instead. The button disappears while the folder reads and comes back only if it can't (moved, deleted, or Chrome's permission gone).
+
+Screenshots come from `dev/demo.html?scenario=s`, `?scenario=a`, `?scenario=monthly` and `?scenario=welcome` (the store picture: `?scenario=burn`), rendered with synthetic data.
 
 ## Install (from this repo)
 
 1. Download this repository (green "Code" button, "Download ZIP") and unzip it, or clone it.
 2. Open `chrome://extensions`, turn on "Developer mode" (top right).
 3. Click "Load unpacked" and pick the `extension` folder.
-4. Stay logged in to claude.ai in that Chrome profile. The first sample arrives within a minute; click the toolbar icon to open the chart.
+4. Stay logged in to claude.ai in that Chrome profile. The first sample arrives within a minute; click the toolbar icon to open the chart. The chart opens by itself after the install; until there is a first reading it says what to do next:
+
+![Welcome page: log in to claude.ai to start, with Import and Sync with Claude folder as options](docs/welcome.png)
 
 ## Several accounts
 
-Every account the extension has seen keeps updating, even after the browser signs in to another one: it saves each account's claude.ai session key (local storage only, never exported) and polls each account with its own key. Pick the account in the chart's account menu.
+Every account the extension has seen keeps updating, even after the browser signs in to another one: it saves each account's claude.ai session key (local storage only; "Export JSON" includes them only if you say so when it asks, to reinstall without logging in again) and polls each account with its own key. Pick the account in the chart's account menu.
 
 **claude.ai's own "Log out" becomes an account switch.** Normally it ends the session on claude.ai's side, which would stop that account's chart. The extension blocks that request (only the one claude.ai's page sends), clears the login in that window, and shows claude.ai's login page: log in to the next account, and the previous one keeps updating. The chart page has the same switch, plus the real logout:
 
@@ -46,7 +52,7 @@ Logging in to another account in an Incognito window also works (turn on "Allow 
 
 ## Layout
 
-* `extension/`: the unpacked extension. `manifest.json`, `background.js` (poller), `parse.js` (usage payload parser, import merge), `pace.js` (ideal line, zone, finish window, rank maths), `chart.html` + `chart.js` (chart page; `HIDDEN_SERIES` lists limits that are recorded but not drawn, Fable today), `icons/`
+* `extension/`: the unpacked extension. `manifest.json`, `background.js` (poller), `parse.js` (usage payload parser, import merge, Claude Code log reader for "Sync with Claude folder"), `pace.js` (ideal line, zone, finish window, rank maths), `chart.html` + `chart.js` (chart page; `HIDDEN_SERIES` lists limits that are recorded but not drawn, Fable today), `icons/`
 * `dev/`: `test_parse.js`, `test_pace.js` (run under several TZ values), `test_poll.js` (background.js against a fake claude.ai: two weekly orgs, one monthly, several accounts), `test_chrome_multi.js` (the several-accounts plumbing in a real Chrome for Testing against a local fake claude.ai; needs Chrome for Testing and openssl, Windows path), `demo.html` (chart with fake data), `promo.html` (store tile source), `make_icons.py`, `build.py`
 * `docs/`: README screenshots
 * `store/`: listing copy, privacy policy, store images

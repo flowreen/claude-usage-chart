@@ -5,18 +5,28 @@ const PANEL_W = 796; // design width of one chart: .panel max-width plus its sid
 // Series still polled and stored but not drawn (case-insensitive). Remove a name to bring its chart back with its
 // full history; the frontier look in panel() and chart.html stays for that.
 const HIDDEN_SERIES = ['Fable'];
+// What 1% of the "All models" weekly limit is worth at API list prices, by plan, until the user's own Claude Code logs
+// measure it (apiRate). claude.ai reports plan usage only in percent. Max 20x: Reddit audits that priced usage logs at
+// list against the meter after the September 2026 limit change (about $1,900 a week; cache-heavy Opus 4.6 mixes
+// $23.50 to $25). Max 5x: the same over the 2.2x weekly ratio measured between the two plans. Other plans: percent.
+const API_USD_PER_PCT = { 'Max 20x': 19, 'Max 5x': 8.6 };
+const API_SOURCE = 'Reddit audits of usage logs against the meter, September 2026';
 // orgNames, orgPlans and orgUsers (the signed-in person's name) come from claude.ai; orgAliases are names the
 // user typed and win over everything.
 const ORG_MAPS = ['orgNames', 'orgPlans', 'orgUsers', 'orgAliases'];
 // week = the reset time of the period on screen (null = the newest), so a new period arriving while the page is
 // open does not move an older one out from under the reader.
 // view = the zoom shared by every chart on the page (see setView); viewOf = the account and period it belongs to.
+// logMinutes / logSpan = imported Claude Code dollars per minute and the time they cover (see the logs button).
 const state = { points: [], held: [], orgNames: {}, orgPlans: {}, orgUsers: {}, orgAliases: {}, hiddenOrgs: [], signedOut: new Set(), org: null, week: null, weeks: [], weekNames: [], allMarkers: false, drawn: 0,
-                view: { k: 1, x: 0, y: 0 }, viewOf: null, redraws: [], drag: null };
+                view: { k: 1, x: 0, y: 0 }, viewOf: null, redraws: [], refreshes: [], drag: null, logMinutes: [], logSpan: null };
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const stored = await chrome.storage.local.get(['points', 'held', 'status', 'selectedOrg', 'hiddenOrgs', ...ORG_MAPS]);
+  const stored = await chrome.storage.local.get(['points', 'held', 'status', 'selectedOrg', 'hiddenOrgs', 'logMinutes', 'logSpan', 'logState', ...ORG_MAPS]);
+  state.logMinutes = Array.isArray(stored.logMinutes) ? stored.logMinutes : [];
+  state.logSpan = stored.logSpan || null;
+  await syncButton(stored.logState); // before render: the first-run card shows the sync link only when it is needed
   // Every point carries its account (org); anything without one is ignored.
   state.points = (stored.points || []).filter(p => p && p.org);
   // The newest sample of each series while its value stands still: drawn as the last point, not stored as one.
@@ -24,6 +34,7 @@ async function load() {
   for (const k of ORG_MAPS) state[k] = stored[k] || {};
   state.hiddenOrgs = Array.isArray(stored.hiddenOrgs) ? stored.hiddenOrgs : [];
   if (state.org === null && stored.selectedOrg) state.org = stored.selectedOrg;
+  state.status = stored.status || null; // the last poll's result, for the first-run card (welcome)
   showStatus(stored.status);
   render();
   markSignedOut();
@@ -68,11 +79,63 @@ function orgs() {
   return [...latest.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
 }
 
+// A poll that read nothing because no login works (background.js marks it auth).
+const isAuth = s => !!s && !s.ok && (s.auth || /not logged in to claude\.ai/.test(s.msg || ''));
+
 function showStatus(s) {
   const el = $('status');
-  if (!s) { el.textContent = 'no poll yet'; return; }
-  el.textContent = `last poll ${new Date(s.t).toLocaleString(undefined, { hourCycle: 'h23' })}: ${s.msg}`;
+  if (!s) { el.textContent = 'no poll yet'; el.title = ''; el.dataset.auth = ''; return; }
+  // Not logged in: what to do, in plain words; claude.ai's own answer stays in the tooltip. With nothing charted
+  // yet the first-run card says it already, so the line is hidden then (render).
+  el.textContent = isAuth(s)
+    ? `Not logged in to claude.ai (checked ${new Date(s.t).toLocaleTimeString(undefined, { hourCycle: 'h23' })}): log in to keep the chart updating`
+    : `last poll ${new Date(s.t).toLocaleString(undefined, { hourCycle: 'h23' })}: ${s.msg}`;
+  el.title = isAuth(s) ? s.msg : '';
+  el.dataset.auth = isAuth(s) ? '1' : '';
+  el.hidden = isAuth(s) && !state.weeks.length;
   el.classList.toggle('bad', !s.ok);
+}
+
+const openTab = url => (chrome.tabs?.create ? chrome.tabs.create({ url }) : window.open(url));
+
+// First run, nothing charted yet: the next step, from the last poll's result, instead of an empty chart.
+function welcome() {
+  const s = state.status;
+  const box = document.createElement('div');
+  box.className = 'welcome';
+  const h = document.createElement('h2');
+  const lead = document.createElement('p');
+  lead.className = 'lead';
+  const go = document.createElement('button');
+  go.className = 'primary';
+  if (!s || isAuth(s)) {
+    h.textContent = 'Log in to claude.ai to start';
+    lead.textContent = 'Log in in this browser. The chart fills in by itself within a minute, with nothing else to set up.';
+    go.textContent = 'Open claude.ai';
+    go.onclick = () => openTab('https://claude.ai/login');
+  } else {
+    h.textContent = s.ok ? 'Reading your usage' : 'claude.ai did not answer';
+    lead.textContent = s.ok ? 'You are logged in. The chart starts with the first weekly reading, checked every minute.'
+      : `${s.msg}. The extension tries again every minute.`;
+    go.textContent = 'Poll now';
+    go.onclick = () => $('pollnow').click();
+  }
+  const opt = (before, label, after, act) => {
+    const p = document.createElement('p');
+    p.className = 'opt';
+    const b = document.createElement('button');
+    b.className = 'link';
+    b.textContent = label;
+    b.onclick = act;
+    p.append(before, b, after);
+    return p;
+  };
+  box.append(h, lead, go, opt('Reinstalling, or moving from another browser? ', 'Import', ' the file you exported.', () => $('import').click()));
+  const sync = () => $('sync').click();
+  if (state.syncWhy === 'connect') box.append(opt('Use Claude Code? ', 'Sync with Claude folder', ` to price your usage from your own logs: pick ${CLAUDE_HOME}.`, sync));
+  if (state.syncWhy === 'allow') box.append(opt('The Claude folder sync paused while this tab was closed. ', 'Keep syncing', ' to resume it.', sync));
+  if (state.syncWhy === 'fix') box.append(opt('The Claude folder can\'t be read. ', 'Sync with Claude folder', ` to pick it again: ${CLAUDE_HOME}.`, sync));
+  return box;
 }
 
 // Weeks are identified by their reset time; resets within 6 h of each other are the same week.
@@ -112,6 +175,7 @@ function render() {
   add.textContent = '+ Add account';
   acct.appendChild(add);
   acct.value = state.org;
+  // no account yet: hidden, the first-run card's login button is the way in
   acct.hidden = !os.length;
   $('rename').hidden = $('logout').hidden = !os.length;
 
@@ -138,15 +202,21 @@ function render() {
     sel.appendChild(o);
   });
   sel.value = weekIdx;
-  $('delete').hidden = !ws.length;
+  // Nothing charted yet: only what helps get started stays (account menu, Import, Sync).
+  // Nothing charted yet: the first-run card holds the next steps (welcome), so the bar below stays empty.
+  sel.hidden = $('delete').hidden = $('markers').hidden = $('export').hidden = $('pollnow').hidden = $('count').hidden
+    = $('import').hidden = !ws.length;
+  $('sync').hidden = !state.syncNeeded || !ws.length;
+  $('status').hidden = !ws.length && !!$('status').dataset.auth;
   $('count').textContent = `${state.points.length} points stored`;
   $('markers').setAttribute('aria-pressed', state.allMarkers);
 
   const charts = $('charts');
   charts.innerHTML = '';
   state.redraws = [];
+  state.refreshes = [];
   if (!ws.length) {
-    charts.innerHTML = '<div class="empty" style="flex:1">No samples yet. Stay logged in to claude.ai in this browser; the extension polls every minute.</div>';
+    charts.appendChild(welcome());
     layout();
     return;
   }
@@ -327,13 +397,20 @@ function panel(name, pts, end, start) {
   const result = weekResult(pts, end, Date.now(), start);
   // "40%" on weekly charts, "$200 of $500" on monthly spend.
   const amount = pct => (money ? cash(pct) : `${pct.toFixed(0)}%`);
+  // Weekly "All models": what a share of the limit is worth at API list prices, an estimate in whole dollars.
+  // read again by refresh() on every poll, as the synced Claude Code logs grow
+  let rate = null;
+  const apiUsd = pct => fmtWhole(pct * rate.usd);
+  const atApi = pct => (rate ? ` (≈ ${apiUsd(pct)})` : '');
+  // Text that changes with the rate or the clock: [element, text] pairs set by refresh(), now and on every poll.
+  const texts = [];
   const limitTxt = money ? `the ${cash(100)} limit` : '100%';
   const chip = document.createElement('span');
   chip.className = `grade grade-${result.grade}`;
   chip.textContent = result.grade;
   chip.title = `${result.live ? 'Rank if this pace holds' : 'Final rank'}: score ${result.score.toFixed(1)}. `
     + `Score = ${period === 'month' ? 'spend' : 'usage'} at the reset, minus half the share of the ${period} the limit `
-    + `blocks before the ${finName}. S 95+, A 90+, B 75+, C 50+, else D. Blocked early${money ? ' or 100% after the ' + finName : ''}: at most A.`;
+    + `blocks before the ${finName}. S 95+, A 90+, B 75+, C 50+, else D. Blocked early: at most A.`;
   div.querySelector('h2').append(' ', chip);
   const hint = document.createElement('span');
   hint.className = 'grade-hint';
@@ -342,26 +419,56 @@ function panel(name, pts, end, start) {
 
   const d = deviation(last, end, start);
   const pace = document.createElement('div');
+  const paceText = document.createElement('span');
   const tag = document.createElement('span');
   tag.className = 'zone-tag';
   if (live) {
     pace.className = `pace pace-${lastZone}`;
-    pace.textContent = `${money ? `${cash(last.pct)} of ${cash(100)} · ` : ''}Pace: ${d > 0 ? '▲ +' : '▼ '}${d.toFixed(1)}%`;
+    texts.push([paceText, () => `${money ? `${cash(last.pct)} of ${cash(100)} · ` : rate ? `≈ ${apiUsd(last.pct)} of ${apiUsd(100)} · ` : ''}`
+      + `Pace: ${d > 0 ? '▲ +' : '▼ '}${d.toFixed(1)}%`]);
     tag.textContent = lastZone === 'zone' ? 'IN THE ZONE' : lastZone === 'over' ? 'over' : 'under';
   } else {
     // Finished period: the result, not a live pace.
     if (result.hitAt) {
       pace.className = `pace result ${result.onFinalDay ? 'pace-zone' : 'pace-early'}`;
-      pace.textContent = result.onFinalDay ? `🏁 Used it all ${finIn}` : 'Used it all';
+      paceText.textContent = result.onFinalDay ? `🏁 Used it all ${finIn}` : 'Used it all';
       tag.textContent = `${money ? cash(100) : '100%'} ${fmtWhen(result.hitAt)}, ${fmtDur(result.earlyMs)} before reset`;
     } else {
       pace.className = 'pace result';
-      pace.textContent = `Final: ${amount(result.final)}${money ? ` of ${cash(100)}` : ''} used`;
-      tag.textContent = `${amount(100 - result.final)} unused`;
+      texts.push([paceText, () => `Final: ${amount(result.final)}${money ? ` of ${cash(100)}` : ''} used`
+        + (rate ? ` (≈ ${apiUsd(result.final)} of ${apiUsd(100)})` : '')]);
+      texts.push([tag, () => `${amount(100 - result.final)} unused${atApi(100 - result.final)}`]);
     }
   }
-  pace.append(' ', tag);
+  pace.append(paceText, ' ', tag);
   div.appendChild(pace);
+
+  // 🔥 The session burning now (burnSession, to this minute) and the period's fastest climb timed to the minute
+  // (burnPeak): money on monthly spend, API-price dollars on weekly limits with a rate, else percent.
+  const pctText = pct => `${pct >= 10 ? Math.round(pct) : +pct.toPrecision(2)}%`;
+  const used = pct => (money ? cash(pct) : rate ? `≈ ${apiUsd(pct)}` : pctText(pct));
+  const perMin = pct => (money ? fmtRate(pct / 100 * money.limit, money.currency)
+    : rate ? fmtRate(pct * rate.usd, 'USD') : pctText(pct));
+  const peak = burnPeak(pts);
+  const burn = document.createElement('div');
+  texts.push([burn, () => {
+    const session = live ? burnSession(pts, Date.now()) : null;
+    const parts = [];
+    if (session) parts.push(`This session burned ${used(session.used)} (${perMin(session.perMin)} / minute) since ${fmtSince(session.from)}`);
+    if (peak) parts.push(`${session ? 'peak' : 'Peak'} ${perMin(peak.perMin)} / minute on ${fmtSec(peak.at)}`);
+    burn.hidden = !parts.length;
+    return parts.length ? `🔥 ${parts.join(' · ')}` : '';
+  }]);
+  const refresh = () => {
+    rate = !money && name === 'All models' ? apiRate(pts) : null;
+    for (const [node, text] of texts) node.textContent = text();
+    pace.title = rate ? rate.note : '';
+    burn.title = `A session starts after the longest break between moves of the last ${BURN_LOOKBACK_MS / HOUR} h (for most `
+      + `people the night) and runs to now; ${BURN_IDLE_MS / HOUR} h without a move ends it. `
+      + 'Peak = the fastest climb between two moves that are both timed to the minute.'
+      + (money ? '' : ' Weekly usage moves in whole percent.') + (rate ? ` ${rate.note}` : '');
+  };
+  state.refreshes.push(refresh);
 
   const stats = document.createElement('div');
   stats.className = 'stats';
@@ -370,13 +477,15 @@ function panel(name, pts, end, start) {
   if (!live) {
     line1.textContent = `${st.best >= HOUR ? `best streak ${fmtDur(st.best)}` : 'no streak'} · ${result.avgDev.toFixed(1)}% off the ideal line on average`;
     stats.appendChild(line1);
+    stats.appendChild(burn);
+    refresh();
     div.appendChild(stats);
     div.appendChild(sub);
     return div;
   }
   const best = st.best >= HOUR ? ` · best ${fmtDur(st.best)}` : '';
   if (st.current !== null && live) {
-    line1.textContent = st.current < HOUR ? `🔥 In the zone: streak starts now${best}` : `🔥 ${fmtDur(st.current)} in the zone${best}`;
+    line1.textContent = st.current < HOUR ? `🎯 In the zone: streak starts now${best}` : `🎯 ${fmtDur(st.current)} in the zone${best}`;
   } else {
     line1.textContent = (st.best >= HOUR ? `best streak ${fmtDur(st.best)}` : 'no streak yet')
       + (live ? ` · get within ${Math.round(zonePts(end, start))}% of the line to start one` : '');
@@ -396,11 +505,13 @@ function panel(name, pts, end, start) {
       line2.textContent = `Hits ${limitTxt} ${fmtWhen(proj.hitAt)}, after the ${finName}: aim for ${fmtWhen(fin.start)} or later that day`;
     } else {
       const left = 100 - Math.min(100, proj.projected);
-      line2.textContent = `Projected ${amount(Math.min(100, proj.projected))} at reset · ${amount(left)} left unused`;
+      texts.push([line2, () => `Projected ${amount(Math.min(100, proj.projected))} at reset · ${amount(left)} left unused${atApi(left)}`]);
       if (left > UNUSED_WARN) line2.className = 'loss';
     }
     stats.appendChild(line2);
   }
+  stats.appendChild(burn);
+  refresh();
   div.appendChild(stats);
   if (live && lastZone === 'zone') div.classList.add('in-zone');
   div.appendChild(sub);
@@ -415,6 +526,47 @@ function fmtDur(ms) {
 }
 
 const fmtWhen = t => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const fmtSec = t => new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+const fmtSince = t => new Date(t).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+// What 1% of the account's "All models" weekly limit is worth at API list prices, with where that comes from: the
+// imported Claude Code logs where they cover the climb (the period on screen, else the newest period they cover, see
+// measuredRate), else the plan's value in API_USD_PER_PCT, else null (the chart stays in percent).
+function apiRate(pts) {
+  const series = samples().filter(p => p.org === state.org && p.key === 'All models');
+  const periods = [pts, ...weeks(series).map(r => series.filter(p => Math.abs(p.reset - r) < 6 * HOUR).sort((a, b) => a.t - b.t))];
+  for (const ps of periods) {
+    const m = measuredRate(ps, state.logMinutes, state.logSpan);
+    if (m) {
+      const when = ps === pts ? 'this period' : `the period to ${fmtDay(ps[ps.length - 1].reset)}`;
+      return { usd: m.usdPerPct, note: `Dollars at API list prices: 1% ≈ ${formatMoney(m.usdPerPct)}, measured from your `
+        + `synced Claude Code logs in ${when} (logged calls in stretches holding ${m.covered} of the ${m.climbed} points climbed).` };
+    }
+  }
+  const plan = state.orgPlans[state.org];
+  const usd = API_USD_PER_PCT[plan];
+  return usd ? { usd, note: `Dollars at API list prices: 1% of the ${plan} weekly limit ≈ ${formatMoney(usd)}, from ${API_SOURCE}. `
+    + (state.logSpan ? 'Your synced Claude Code logs do not cover enough of this account\'s climb yet to measure your own.'
+      : 'Sync your Claude folder to measure your own.') } : null;
+}
+
+const fmtWhole = v => {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
+  } catch {
+    return `$${Math.round(v)}`;
+  }
+};
+
+// Money per minute: two significant digits below one unit, so a slow burn does not read "$0.00".
+function fmtRate(v, currency) {
+  if (v >= 1) return formatMoney(v, currency);
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumSignificantDigits: 2, maximumSignificantDigits: 2 }).format(v);
+  } catch {
+    return `${v.toPrecision(2)} ${currency}`;
+  }
+}
 
 // Time grid for the part of the period in view, about eight lines at most: whole days (a week) or weeks (a month)
 // counted from the period start, as on the whole period; zoomed in to four days or less, local clock times.
@@ -621,12 +773,19 @@ $('delete').onclick = async () => {
   load();
 };
 $('markers').onclick = () => { state.allMarkers = !state.allMarkers; render(); };
-$('export').onclick = () => {
+// Saved logins go into the file only when asked for: whoever has such a file can use those accounts.
+$('export').onclick = async () => {
   const maps = Object.fromEntries(ORG_MAPS.map(k => [k, state[k]]));
-  const blob = new Blob([JSON.stringify({ version: 4, ...maps, points: state.points }, null, 1)], { type: 'application/json' });
+  const withLogins = confirm('Include the saved claude.ai logins?\n\nOK: importing this file later needs no new login (for '
+    + 'reinstalling the extension or moving it to another browser), but anyone who has the file can use those accounts: '
+    + 'keep it private and delete it after.\nCancel: chart data only.');
+  const sessions = withLogins ? ((await chrome.storage.local.get('sessions')).sessions || [])
+    .map(({ key, name, orgIds }) => ({ key, name, orgIds })) : undefined;
+  const blob = new Blob([JSON.stringify({ version: 4, ...maps, points: state.points, ...(sessions && { sessions }) }, null, 1)],
+    { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `claude-usage-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `claude-usage-${new Date().toISOString().slice(0, 10)}${withLogins ? '-with-logins' : ''}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
@@ -644,6 +803,77 @@ $('file').onchange = async e => {
   }
   load();
 };
+// "Sync with Claude folder": one click (or dropping the folder on the page) connects the .claude folder, then the
+// background worker reads its Claude Code logs on every poll (syncLogs) and only dollars per minute are kept. The
+// button shows only while no folder is connected or the connected one can't be read: a lost permission comes back
+// with one click, a moved or deleted folder is picked again. With nothing charted yet the first-run card links to it
+// instead (welcome).
+async function syncButton(logState) {
+  const dir = await logHandle().catch(() => null);
+  const perm = dir ? await dir.queryPermission({ mode: 'read' }).catch(() => 'error') : null;
+  // Why the sync needs a click: no folder yet, Chrome's permission to give again (a picked folder stays readable
+  // only while a chart tab is open; asked again later, Chrome may also offer "Allow on every visit", which lasts), or a
+  // folder that can't be read (moved, deleted, refused).
+  state.syncWhy = !dir ? 'connect' : perm === 'prompt' ? 'allow' : perm !== 'granted' || logState?.ok === false ? 'fix' : null;
+  state.syncNeeded = !!state.syncWhy;
+  const btn = $('sync');
+  btn.textContent = state.syncWhy === 'allow' ? 'Keep syncing the Claude folder' : 'Sync with Claude folder';
+  btn.classList.toggle('primary', state.syncWhy === 'allow');
+  btn.hidden = !state.syncNeeded || !state.weeks.length;
+  btn.title = state.syncWhy === 'allow'
+    ? 'Chrome asks again for permission to read the Claude folder. If it offers "Allow on every visit", choosing it keeps the sync going while this tab is closed.'
+    : logState?.ok === false ? `${logState.msg}. Click to fix.` : btn.dataset.title;
+}
+// Claude Code's logs live in the .claude folder of the user's home folder (it has a "projects" folder inside). Code
+// projects have .claude folders too, with settings only: a pick of one is refused before it replaces a working one.
+const CLAUDE_HOME = (() => {
+  const p = navigator.userAgentData?.platform || navigator.platform || '';
+  if (/win/i.test(p)) return 'C:\\Users\\<your name>\\.claude';
+  if (/mac/i.test(p)) return '/Users/<your name>/.claude (Cmd+Shift+. shows it in the picker)';
+  return '~/.claude';
+})();
+async function connectLogs(dir) {
+  if (dir.name !== 'projects' && !(await dir.getDirectoryHandle('projects').then(() => true, () => false))) {
+    showStatus({ t: Date.now(), ok: false, msg: `"${dir.name}" has no Claude Code logs`
+      + `${dir.name === '.claude' ? ' (that .claude holds a project\'s settings)' : ''}: pick ${CLAUDE_HOME}` });
+    return;
+  }
+  await logHandle(dir);
+  showStatus({ t: Date.now(), ok: true, msg: `reading the Claude folder "${dir.name}"...` });
+  showStatus(await chrome.runtime.sendMessage({ type: 'logs', reset: true })
+    .catch(err => ({ t: Date.now(), ok: false, msg: err.message })) || { t: Date.now(), ok: false, msg: 'no folder' });
+}
+$('sync').dataset.title = `Pick (or drop on this page) ${CLAUDE_HOME}, the one in your user folder with a "projects" folder inside `
+  + '(the .claude folders in code projects hold settings only). Its Claude Code logs are then read in your browser on every poll; '
+  + 'only dollars per minute are kept, to measure what 1% of your weekly limit is worth.';
+// The connected folder is asked for again while it only lacks Chrome's permission (a "Don't allow" leaves it at that,
+// the button stays); the folder picker opens only with no folder yet or one that can't be read.
+$('sync').onclick = async () => {
+  try {
+    const old = await logHandle().catch(() => null);
+    const perm = old ? await old.queryPermission({ mode: 'read' }).catch(() => 'error') : null;
+    if (perm === 'prompt') {
+      if (await old.requestPermission({ mode: 'read' }) === 'granted') showStatus(await chrome.runtime.sendMessage({ type: 'logs' }));
+      return;
+    }
+    if (perm === 'granted' && state.syncWhy !== 'fix') {
+      showStatus(await chrome.runtime.sendMessage({ type: 'logs' }));
+      return;
+    }
+    await connectLogs(await showDirectoryPicker({ id: 'claude-folder', mode: 'read' }));
+  } catch (err) {
+    if (err.name !== 'AbortError') showStatus({ t: Date.now(), ok: false, msg: `Claude folder: ${err.message}` });
+  }
+};
+addEventListener('dragover', e => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+addEventListener('drop', e => {
+  const item = [...(e.dataTransfer?.items || [])].find(i => i.kind === 'file');
+  if (!item?.getAsFileSystemHandle) return;
+  e.preventDefault();
+  // asked for inside the event: the handle is gone after it
+  item.getAsFileSystemHandle().then(h => (h?.kind === 'directory' ? connectLogs(h)
+    : showStatus({ t: Date.now(), ok: false, msg: 'drop the .claude folder (in your user folder), not a file' })));
+});
 $('pollnow').onclick = async () => {
   try {
     showStatus(await chrome.runtime.sendMessage('poll'));
@@ -653,11 +883,21 @@ $('pollnow').onclick = async () => {
   load();
 };
 // A poll that found every value as it was only renews `held`: the status line follows each one, the charts
-// every 10 minutes (a redraw closes an open menu).
+// every 10 minutes (a redraw closes an open menu). The dollar and 🔥 texts follow every poll and every log read.
 chrome.storage.onChanged.addListener(ch => {
   const due = ch.held && Date.now() - state.drawn >= 10 * 6e4;
+  if (ch.logMinutes) state.logMinutes = ch.logMinutes.newValue || [];
+  if (ch.logSpan) state.logSpan = ch.logSpan.newValue || null;
+  if (ch.logState) syncButton(ch.logState.newValue).then(() => { if (!state.weeks.length) render(); });
   if ((ch.points || due || ch.orgPlans || ch.orgUsers || ch.hiddenOrgs || ch.sessions) && $('rename-input').hidden) load();
-  else if (ch.status) showStatus(ch.status.newValue);
+  else {
+    if (ch.status) {
+      state.status = ch.status.newValue || null;
+      showStatus(state.status);
+      if (!state.weeks.length) render(); // the first-run card follows the poll (logged in or not)
+    }
+    if (ch.held || ch.logMinutes || ch.logSpan) for (const f of state.refreshes) f();
+  }
 });
 // Status text or the rename box can change the page's height: refit then, and on every window resize.
 new ResizeObserver(fit).observe($('stage'));

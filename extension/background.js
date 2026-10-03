@@ -12,9 +12,13 @@ const RULE_ID = 1;
 const LOGOUT_RULE_ID = 2;
 const LOGOUT_URL = 'https://claude.ai/api/auth/logout';
 
-chrome.runtime.onInstalled.addListener(setup);
+chrome.runtime.onInstalled.addListener(d => {
+  setup();
+  // a first install opens the chart, which says what to do next
+  if (d?.reason === 'install') chrome.tabs.create({ url: 'chart.html' });
+});
 chrome.runtime.onStartup.addListener(setup);
-chrome.alarms.onAlarm.addListener(a => { if (a.name === 'poll') poll(); });
+chrome.alarms.onAlarm.addListener(a => { if (a.name === 'poll') { poll(); syncLogs(); } });
 chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: 'chart.html' }));
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg === 'poll') { poll().then(reply); return true; }
@@ -22,6 +26,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg?.type === 'accounts') { accountList().then(reply); return true; }
   if (msg?.type === 'forget') { serial(() => forgetOnce(msg.org)).then(reply); return true; }
   if (msg?.type === 'delete') { serial(() => deleteOnce(msg.org, msg.reset)).then(reply); return true; }
+  if (msg?.type === 'logs') { syncLogs(!!msg.reset).then(reply); return true; }
   if (msg?.type === 'add') {
     serial(addAccountOnce).then(reply, e => reply({ t: Date.now(), ok: false, msg: String(e.message || e) }));
     return true;
@@ -54,7 +59,8 @@ async function getJson(url, credentials = 'include') {
 
 // Several accounts: the browser holds one claude.ai login at a time, so the session key of every account seen
 // here (normal or incognito window) is kept and polled on its own, and an account keeps updating after the
-// browser signs in to another. Keys stay in local extension storage and are never exported.
+// browser signs in to another. Keys stay in local extension storage; they leave it only in an export the user asked
+// to include them in (chart.js).
 
 // A login in any window is polled right away, so its key is saved before the browser moves to another account.
 // One landing during a poll gets a poll of its own after it: the running one read the cookies before it.
@@ -242,6 +248,38 @@ function poll() {
 }
 const importData = data => serial(() => importOnce(data));
 
+// Claude Code logs (the chart's "Sync with Claude folder"): read on every poll while Chrome still lets the extension
+// read the folder, so calls stay counted after their transcripts are deleted. Its own chain: the only writer of the
+// log keys. logState tells the chart when the button is needed again: the folder moved or deleted, or the permission
+// gone. reset = a newly connected folder, read in full.
+let logChain = Promise.resolve();
+function syncLogs(reset = false) {
+  const r = logChain.then(() => syncLogsOnce(reset));
+  logChain = r.catch(() => {});
+  return r;
+}
+async function syncLogsOnce(reset) {
+  const now = Date.now();
+  const dir = await logHandle().catch(() => null);
+  if (!dir) return null;
+  let logState;
+  try {
+    if (await dir.queryPermission({ mode: 'read' }) !== 'granted') throw new Error('Chrome needs your permission to read it again');
+    const stored = await chrome.storage.local.get(['logMinutes', 'logScan', 'logSpan']);
+    const r = await scanLogs(dir, reset ? null : stored.logScan || null, now);
+    const logMinutes = r.full ? mergeMinutes(stored.logMinutes, r.minutes) : addMinutes(stored.logMinutes, r.minutes);
+    const first = logMinutes.length ? logMinutes[0][0] * MINUTE : now;
+    const logSpan = { from: Math.min(stored.logSpan?.from ?? first, first), to: now };
+    const skipped = Object.entries(r.unpriced).map(([m, n]) => `${m} x${n}`).join(', ');
+    logState = { t: now, ok: true, msg: `Claude folder "${dir.name}" read${skipped ? `; no price for ${skipped}` : ''}` };
+    await chrome.storage.local.set({ ...((r.full || r.minutes.length) && { logMinutes }), logScan: r.scan, logSpan, logState });
+  } catch (e) {
+    logState = { t: now, ok: false, msg: `Claude folder "${dir.name}" can't be read: ${e.message || e}` };
+    await chrome.storage.local.set({ logState });
+  }
+  return logState;
+}
+
 // Every point carries its org id: one browser can see several accounts or orgs, each with its own week.
 // The browser's own login is polled first, then every saved account; an org two accounts share is read once.
 async function pollOnce() {
@@ -319,9 +357,12 @@ async function pollOnce() {
     await updateBadge(withHeld(points, held), now);
     return status;
   } catch (e) {
-    const status = { t: now, ok: false, msg: String(e.message || e) };
+    const msg = String(e.message || e);
+    // auth: nothing read because no login works, so the chart page and the badge ask for a login
+    const status = { t: now, ok: false, msg, ...(/not logged in to claude\.ai/.test(msg) && { auth: true }) };
     await chrome.storage.local.set({ status });
-    await setBadge('?', '#8a8a8a', `Claude weekly usage: ${status.msg}`);
+    await (status.auth ? setBadge('!', '#8a8a8a', 'Claude weekly usage: log in to claude.ai to start')
+      : setBadge('?', '#8a8a8a', `Claude weekly usage: ${status.msg}`));
     return status;
   }
 }
@@ -426,12 +467,13 @@ async function deleteOnce(org, reset) {
   return status;
 }
 
-// An export file from the chart page: { points, orgNames, orgPlans, orgUsers, orgAliases } or a bare points array.
-// New points are added, labels from the file only fill gaps (local values win).
+// An export file from the chart page: { points, orgNames, orgPlans, orgUsers, orgAliases, sessions? } or a bare
+// points array. New points are added, labels from the file only fill gaps (local values win). Saved logins are in a
+// file only when its export included them: a key not saved here is added and the next poll checks it.
 async function importOnce(data) {
   const now = Date.now();
   try {
-    const stored = await chrome.storage.local.get(['points', 'held', ...ORG_MAPS]);
+    const stored = await chrome.storage.local.get(['points', 'held', 'sessions', ...ORG_MAPS]);
     const points = stored.points || [];
     const n = mergePoints(points, Array.isArray(data) ? data : data?.points);
     const maps = {};
@@ -443,8 +485,16 @@ async function importOnce(data) {
         if (typeof v === 'string' && v.trim() && !maps[k][id]) maps[k][id] = v.trim().slice(0, 60);
       }
     }
-    const status = { t: now, ok: true, msg: `imported ${n} new point(s)` };
-    await chrome.storage.local.set({ points, ...maps, status });
+    const sessions = Array.isArray(stored.sessions) ? stored.sessions : [];
+    let logins = 0;
+    for (const s of Array.isArray(data?.sessions) ? data.sessions : []) {
+      if (typeof s?.key !== 'string' || !s.key || sessions.some(x => x.key === s.key)) continue;
+      sessions.push({ key: s.key, name: typeof s.name === 'string' ? s.name.slice(0, 60) : '',
+                      orgIds: Array.isArray(s.orgIds) ? s.orgIds.filter(id => typeof id === 'string') : [] });
+      logins++;
+    }
+    const status = { t: now, ok: true, msg: `imported ${n} new point(s)${logins ? ` and ${logins} login(s)` : ''}` };
+    await chrome.storage.local.set({ points, ...maps, ...(logins && { sessions }), status });
     await updateBadge(withHeld(points, stored.held), now);
     return status;
   } catch (e) {

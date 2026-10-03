@@ -275,6 +275,15 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   const s4 = await poll();
   assert(!s4.ok && store.points.length === before, s4.msg);
   assert.strictEqual(badge.text, '?');
+  // no login works at all: the status says so (auth) and the badge asks for a login
+  const liveSaved = { ...live }, sessionsSaved = structuredClone(store.sessions);
+  for (const k of Object.keys(live)) delete live[k];
+  const s5 = await poll();
+  assert(!s5.ok && s5.auth && /not logged in to claude\.ai/.test(s5.msg), JSON.stringify(s5));
+  assert.strictEqual(badge.text, '!');
+  assert(/log in to claude\.ai/.test(badge.title), badge.title);
+  Object.assign(live, liveSaved);
+  store.sessions = sessionsSaved;
 
   // import runs in the worker: duplicates dropped, labels only fill gaps, badge refreshed from the merged list
   const dup = store.points.find(p => p.org === 'org-a');
@@ -290,6 +299,16 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   assert.notStrictEqual(badge.text, '?');
   const bad = await new Promise(res => listeners.message({ type: 'import', data: 'nonsense' }, {}, res));
   assert(bad.ok && /imported 0/.test(bad.msg), bad.msg);
+  // a file exported with logins brings back keys not saved here; a key saved already and a malformed entry are skipped
+  const savedBefore = store.sessions;
+  const known = (savedBefore || [])[0];
+  const withLogins = await new Promise(res => listeners.message({ type: 'import', data: { points: [], sessions: [
+    ...(known ? [{ key: known.key, name: 'dup', orgIds: [] }] : []), { key: 'sk-moved', name: 'Moved', orgIds: ['org-q', 7] }, { name: 'no key' },
+  ] } }, {}, res));
+  assert(/and 1 login\(s\)/.test(withLogins.msg), withLogins.msg);
+  assert.deepStrictEqual(store.sessions.find(s => s.key === 'sk-moved'), { key: 'sk-moved', name: 'Moved', orgIds: ['org-q'] });
+  assert.strictEqual(store.sessions.filter(s => known && s.key === known.key).length, known ? 1 : 0);
+  store.sessions = savedBefore; // the fake claude.ai does not know sk-moved: keep the rest of the run as it was
 
   // Second account: the browser signs in to sk-2. The first account keeps updating from its saved key, sent only
   // through the session rule with credentials omitted, and the rule is gone after the poll.
