@@ -515,9 +515,13 @@ async function updateBadge(points, now) {
   const pool = inOrg.length ? inOrg : main;
   if (!pool.length) return setBadge('', BADGE_COLORS.under, 'Open usage chart');
   const last = pool.reduce((a, p) => (p.t > a.t ? p : a));
-  const d = last.pct - idealAt(now, last.reset, periodStart(last));
+  // After an early reset of the meter the pace is read against the new limit's line (see limits).
+  const series = pool.filter(p => p.org === last.org && p.key === last.key && Math.abs(p.reset - last.reset) < 6 * PACE_HOUR)
+    .sort((a, b) => a.t - b.t);
+  const from = limitStart(limits(series, periodStart(last)), now);
+  const d = last.pct - idealAt(now, last.reset, from);
   // Same zone rule as the chart's dots: 0% is never in the zone, 100% inside the finish window is the goal.
-  const zone = sampleZone({ ...last, t: now }, last.reset, periodStart(last));
+  const zone = sampleZone({ ...last, t: now }, last.reset, from);
   const r = Math.round(d);
   const pace = `${r > 0 ? '+' : ''}${r}%`;
   // Chrome shows about 4 badge characters: "-13%" fits, "-100%" does not, so the % is dropped only then.

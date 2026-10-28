@@ -288,10 +288,13 @@ function panel(name, pts, end, start) {
   const fin = finishWindow(end, start);
   const finName = money ? 'last working day' : 'finish zone';
   const finIn = `${money ? 'on' : 'in'} the ${finName}`;
-  const Z = zonePts(end, start);
+  // An early reset of the meter starts a new limit, with its own ideal line and zone band (see limits).
+  const lims = limits(pts, start);
+  const cur = lims[lims.length - 1].start;
+  const startOf = t => limitStart(lims, t);
   const live = end > Date.now();
   const last = pts[pts.length - 1];
-  const lastZone = last && sampleZone(last, end, start);
+  const lastZone = last && sampleZone(last, end, cur);
   const proj = projection(pts, end, start);
   const period = money ? 'month' : 'week';
   const legend = `x: ${period} time · y: ${money ? 'spend' : 'usage'} · dashed = ideal · band = zone · ${sampleCount(pts)}`;
@@ -350,10 +353,14 @@ function panel(name, pts, end, start) {
     el('text', { class: 'finish-label', x: (fx + X(fin.end)) / 2, y: H - B - 10, 'text-anchor': money ? 'end' : 'middle' }, g)
       .textContent = `🏁 ${finName}`;
     if (money) g.lastChild.setAttribute('x', X(fin.end) - 4); // a one-day column in a month is narrow
-    el('polygon', { class: 'zone-band', points: [[start, -Z], [end, 100 - Z], [end, 100 + Z], [start, Z]]
-      .map(([t, v]) => `${X(t)},${Y(v)}`).join(' ') }, g);
-    el('line', { x1: X(start), y1: Y(0), x2: X(end), y2: Y(100), stroke: 'var(--ideal)',
-                 'stroke-width': 2, 'stroke-dasharray': '7 6' }, g);
+    lims.forEach((lim, i) => {
+      const a = lim.start, b = i + 1 < lims.length ? lims[i + 1].start : end;
+      const Z = zonePts(end, a), line = t => (t - a) / (end - a) * 100;
+      el('polygon', { class: 'zone-band', points: [[a, line(a) - Z], [b, line(b) - Z], [b, line(b) + Z], [a, line(a) + Z]]
+        .map(([t, v]) => `${X(t)},${Y(v)}`).join(' ') }, g);
+      el('line', { x1: X(a), y1: Y(line(a)), x2: X(b), y2: Y(line(b)), stroke: 'var(--ideal)',
+                   'stroke-width': 2, 'stroke-dasharray': '7 6' }, g);
+    });
 
     if (pts.length) {
       // Projection to the reset, stopping where it would hit 100%.
@@ -375,14 +382,14 @@ function panel(name, pts, end, start) {
       el('polyline', { points: pts.map(p => `${X(p.t)},${Y(p.pct)}`).join(' '), fill: 'none',
                        stroke: 'var(--line)', 'stroke-width': 2 }, g);
       const shown = state.allMarkers ? pts : moved(pts);
-      for (const p of shown) el('circle', { class: `dot dot-${sampleZone(p, end, start)}`, cx: X(p.t), cy: Y(p.pct), r: 5 }, g);
+      for (const p of shown) el('circle', { class: `dot dot-${sampleZone(p, end, startOf(p.t))}`, cx: X(p.t), cy: Y(p.pct), r: 5 }, g);
       // On the clip edge at zoom 1, so drawn unclipped there; zoomed, the plot edge clips it like any point.
       el('circle', anchor, vx || vy ? g : svg);
       if (live) {
         el('circle', { class: `pulse pulse-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
         el('circle', { class: `now now-${lastZone}`, cx: X(last.t), cy: Y(last.pct), r: 8 }, g);
       }
-      hover(div, svg, tip, hoverPts, X, Y, { L, R, T, B, W, H }, end, start, money && cash);
+      hover(div, svg, tip, hoverPts, X, Y, { L, R, T, B, W, H }, end, startOf, money && cash);
     }
     sub.textContent = k === 1 ? `${legend} · scroll to zoom`
       : `${edge(t0)} to ${edge(t1)} · ${k < 10 ? k.toFixed(1) : Math.round(k)}x · drag to move, double-click for the whole ${period}`;
@@ -397,6 +404,8 @@ function panel(name, pts, end, start) {
   const result = weekResult(pts, end, Date.now(), start);
   // "40%" on weekly charts, "$200 of $500" on monthly spend.
   const amount = pct => (money ? cash(pct) : `${pct.toFixed(0)}%`);
+  // Used in all the period's limits so far (see limits): the earlier ones plus the current one.
+  const total = result.earlier + Math.min(100, last.pct);
   // Weekly "All models": what a share of the limit is worth at API list prices, an estimate in whole dollars.
   // read again by refresh() on every poll, as the synced Claude Code logs grow
   let rate = null;
@@ -410,14 +419,15 @@ function panel(name, pts, end, start) {
   chip.textContent = result.grade;
   chip.title = `${result.live ? 'Rank if this pace holds' : 'Final rank'}: score ${result.score.toFixed(1)}. `
     + `Score = ${period === 'month' ? 'spend' : 'usage'} at the reset, minus half the share of the ${period} the limit `
-    + `blocks before the ${finName}. S 95+, A 90+, B 75+, C 50+, else D. Blocked early: at most A.`;
+    + `blocks before the ${finName}. S 95+, A 90+, B 75+, C 50+, else D. Blocked early: at most A.`
+    + (result.limits > 1 ? ` This ${period} had ${result.limits} limits (early resets): usage = the share of all of them used.` : '');
   div.querySelector('h2').append(' ', chip);
   const hint = document.createElement('span');
   hint.className = 'grade-hint';
   hint.textContent = result.live ? 'on track for' : 'final rank';
   chip.before(hint);
 
-  const d = deviation(last, end, start);
+  const d = deviation(last, end, cur);
   const pace = document.createElement('div');
   const paceText = document.createElement('span');
   const tag = document.createElement('span');
@@ -429,9 +439,17 @@ function panel(name, pts, end, start) {
     tag.textContent = lastZone === 'zone' ? 'IN THE ZONE' : lastZone === 'over' ? 'over' : 'under';
   } else {
     // Finished period: the result, not a live pace.
-    if (result.hitAt) {
+    if (result.limits > 1) {
+      // Early resets: the result is the total of the period's limits, the tag the last one's end.
+      const cap = result.limits * 100;
+      pace.className = `pace result${result.hitAt ? ` ${result.onFinalDay ? 'pace-zone' : 'pace-early'}` : ''}`;
+      texts.push([paceText, () => `Week total: ${amount(total)} of ${amount(cap)} used`
+        + (rate ? ` (≈ ${apiUsd(total)} of ${apiUsd(cap)})` : '')]);
+      if (result.hitAt) tag.textContent = `100% ${fmtWhen(result.hitAt)}, ${fmtDur(result.earlyMs)} before reset`;
+      else texts.push([tag, () => `${amount(100 - result.final)} unused${atApi(100 - result.final)}`]);
+    } else if (result.hitAt) {
       pace.className = `pace result ${result.onFinalDay ? 'pace-zone' : 'pace-early'}`;
-      paceText.textContent = result.onFinalDay ? `🏁 Used it all ${finIn}` : 'Used it all';
+      texts.push([paceText, () => `${result.onFinalDay ? `🏁 Used it all ${finIn}` : 'Used it all'}${atApi(100)}`]);
       tag.textContent = `${money ? cash(100) : '100%'} ${fmtWhen(result.hitAt)}, ${fmtDur(result.earlyMs)} before reset`;
     } else {
       pace.className = 'pace result';
@@ -472,6 +490,13 @@ function panel(name, pts, end, start) {
 
   const stats = document.createElement('div');
   stats.className = 'stats';
+  if (result.limits > 1) {
+    // ↺ The early resets, and in a live week the total used so far.
+    const resets = document.createElement('div');
+    const seen = result.resets.map(r => `${amount(r.from)} → ${amount(r.to)} on ${fmtWhen(r.t)}`).join(', ');
+    texts.push([resets, () => `↺ Early reset: ${seen}` + (live ? ` · ${amount(total)} used this week${atApi(total)}` : '')]);
+    stats.appendChild(resets);
+  }
   const st = streaks(pts, end, start);
   const line1 = document.createElement('div');
   if (!live) {
@@ -488,7 +513,7 @@ function panel(name, pts, end, start) {
     line1.textContent = st.current < HOUR ? `🎯 In the zone: streak starts now${best}` : `🎯 ${fmtDur(st.current)} in the zone${best}`;
   } else {
     line1.textContent = (st.best >= HOUR ? `best streak ${fmtDur(st.best)}` : 'no streak yet')
-      + (live ? ` · get within ${Math.round(zonePts(end, start))}% of the line to start one` : '');
+      + (live ? ` · get within ${Math.round(zonePts(end, cur))}% of the line to start one` : '');
   }
   if (st.current !== null && live) line1.className = 'streak-on';
   stats.appendChild(line1);
@@ -659,7 +684,8 @@ addEventListener('pointercancel', endDrag);
 // Hovering anywhere over the plot snaps to the nearest sample in view and shows its exact value. Built again on
 // every zoom step; pointer keeps the last position over a plot, so the tip follows the chart under a still pointer.
 let pointer = null;
-function hover(div, svg, tip, pts, X, Y, box, end, start, cash) {
+// startOf: the start of the limit holding a time (see limits).
+function hover(div, svg, tip, pts, X, Y, box, end, startOf, cash) {
   const ring = el('circle', { r: 9, fill: 'none', stroke: 'var(--fg)', 'stroke-width': 2, visibility: 'hidden',
                               'pointer-events': 'none' }, svg);
   const guide = el('line', { y1: box.T, y2: box.H - box.B, stroke: 'var(--axis)', 'stroke-dasharray': '3 4',
@@ -685,6 +711,7 @@ function hover(div, svg, tip, pts, X, Y, box, end, start, cash) {
     ring.setAttribute('cx', cx); ring.setAttribute('cy', cy); ring.setAttribute('visibility', 'visible');
     guide.setAttribute('x1', cx); guide.setAttribute('x2', cx); guide.setAttribute('visibility', 'visible');
 
+    const start = startOf(best.t);
     const ideal = idealAt(best.t, end, start);
     const d = best.pct - ideal;
     const z = best.anchor ? 'under' : sampleZone(best, end, start);

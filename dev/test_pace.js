@@ -24,7 +24,7 @@ assert.strictEqual(P.sampleZone(at(84 + 48, 50), end), 'under');
 const s = P.streaks([at(84, 50), at(90, 54), at(96, 30), at(102, 60), at(114, 67)], end);
 assert.strictEqual(s.best, 12 * H);
 assert.strictEqual(s.current, 12 * H);
-assert.strictEqual(P.streaks([at(84, 50), at(96, 20)], end).current, null);
+assert.strictEqual(P.streaks([at(84, 50), at(96, 26)], end).current, null);
 // 0% at the week start is inside the band but is not a streak
 assert.strictEqual(P.sampleZone(at(2, 0), end), 'under');
 assert.strictEqual(P.streaks([at(1, 0), at(6, 0), at(12, 0)], end).best, 0);
@@ -90,6 +90,34 @@ assert.strictEqual(ended(20), 'D');
 const live = P.weekResult(pts, end, start + 84 * H);
 assert.strictEqual(live.live, true);
 assert.strictEqual(live.grade, 'S');
+
+// early reset: the limit falls back to 0% inside the week, so a new limit with its own line starts at the first
+// sample after the fall; a dip that keeps more than half is none, and monthly spend (limit raised) is never split
+const rs = [at(10, 20), at(64, 100), at(64.05, 0), at(100, 40), at(167.9, 94)];
+const lims = P.limits(rs, start);
+assert.deepStrictEqual(lims.map(l => [l.start, l.pts.length]), [[start, 2], [start + 64.05 * H, 3]]);
+assert.strictEqual(P.limits([at(10, 40), at(20, 21)], start).length, 1);
+assert.strictEqual(P.limits([{ t: 1, pct: 100, limit: 500 }, { t: 2, pct: 20, limit: 2500 }], 0).length, 1);
+assert.strictEqual(P.limitStart(lims, start + 64 * H), start);
+assert.strictEqual(P.limitStart(lims, start + 70 * H), start + 64.05 * H);
+// 2% at 70h is on the new limit's line (ideal 5.7), far under the week's (41.7)
+assert.strictEqual(P.sampleZone(at(70, 2), end, P.limitStart(lims, start + 70 * H)), 'zone');
+assert.strictEqual(P.sampleZone(at(70, 2), end, start), 'under');
+// the week's usage is the share of both limits used, (100 + 94) / 2 = 97 => S: 3 min at 100% before the reset is
+// under the grace, so it blocks nothing
+const rw = P.weekResult(rs, end, end + H, start);
+assert.deepStrictEqual([rw.limits, rw.earlier, rw.final, rw.hitAt, rw.blockedMs], [2, 100, 94, null, 0]);
+near(rw.score, 97);
+assert.strictEqual(rw.grade, 'S');
+assert.deepStrictEqual(rw.resets, [{ t: start + 64.05 * H, from: 100, to: 0 }]);
+// 12 h stuck at 100% before the reset blocks those hours: 97 - 0.5 * 12.05 / 168 * 100 = 93.4, A
+const stuck = P.weekResult([at(10, 20), at(52, 100), at(64, 100), at(64.05, 0), at(167.9, 94)], end, end + H, start);
+near(stuck.blockedMs, 12.05 * H);
+assert.strictEqual(stuck.grade, 'A');
+// live in the second limit: projected from its own start (40% in 35.95 h), not the first limit's 100% at 64h
+const rp = P.projection(rs.slice(0, 4), end, start);
+near(rp.hitAt, start + (100 + 60 * 35.95 / 40) * H);
+assert.strictEqual(P.weekResult(rs.slice(0, 4), end, start + 100 * H, start).grade, 'S');
 
 // monthly period: UTC calendar month like the product. Run this file under several TZ values.
 // May 2026: May 31 is a Sunday, so the window starts on the last working day, Friday May 29 in local time, and runs
@@ -159,6 +187,10 @@ near(pk.perMin, 0.1);
 assert.strictEqual(pk.at, start + 440 * MIN);
 // a step between polls 10 minutes apart is not timed, so it makes no peak
 assert.strictEqual(P.burnPeak([m(100, 1), m(101, 2), m(200, 2), m(210, 4)]), null);
+// a session across an early reset counts both sides: 90 -> 100, then 0 -> 2 = 12; no peak pairs moves across it
+const across = [m(0, 90), m(100, 90), m(101, 98), m(102, 99), m(103, 100), m(104, 0), m(105, 1), m(106, 2)];
+assert.strictEqual(P.burnSession(across, start + 106 * MIN).used, 12);
+assert.strictEqual(P.burnPeak([m(0, 3), m(1, 4), m(2, 1), m(3, 9)]), null);
 
 // $ per 1% from imported Claude Code dollars per minute: a move every 100 minutes, $20 logged in every stretch
 const climb = [m(0, 0)];
@@ -174,5 +206,11 @@ assert.strictEqual(P.measuredRate(climb, logged.filter((_, i) => i % 2 === 0), s
 // stretches after the import are not counted: four stretches left = under the 5 points needed
 assert.strictEqual(P.measuredRate(climb, logged, { from: start, to: start + 550 * MIN }), null);
 assert.strictEqual(P.measuredRate(climb, [], span), null);
+// an early reset at 5%: the stretch across the fall is no climb, so its dollars stay out and each limit counts
+const twice = [...climb.filter(p => p.t <= start + 500 * MIN), m(501, 0)];
+for (let i = 1; i <= 3; i++) twice.push(m(500 + i * 100 - 1, i - 1), m(500 + i * 100, i));
+const rate2 = P.measuredRate(twice, [150, 250, 350, 450, 550, 650, 750].map(k => [mins(k), 20]), { from: start, to: start + 900 * MIN });
+near(rate2.usdPerPct, 20);
+assert.strictEqual(rate2.covered, 6);
 
 console.log('pace tests passed');

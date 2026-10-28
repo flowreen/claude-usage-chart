@@ -50,6 +50,28 @@ function sampleZone(p, end, start) {
   return zoneOf(deviation(p, end, start), zonePts(end, start));
 }
 
+// claude.ai can set a weekly limit back to 0% before its reset time: from then on the week holds a new limit, with
+// its own ideal line from 0% to 100% at the reset. A fall to half or less inside one period starts one. Monthly
+// spend is never split: its percent falls when the limit is raised, while the money spent stays. Returns each
+// limit's start (the period start, then the first sample after the fall) and its samples; pts sorted by t.
+function limits(pts, start) {
+  if (pts.length && Number.isFinite(pts[pts.length - 1].limit)) return [{ start, pts }];
+  const out = [{ start, pts: [] }];
+  for (const p of pts) {
+    const cur = out[out.length - 1].pts, prev = cur[cur.length - 1];
+    if (prev && p.pct < prev.pct && p.pct <= prev.pct / 2) out.push({ start: p.t, pts: [p] });
+    else cur.push(p);
+  }
+  return out;
+}
+
+// Start of the limit holding time t.
+function limitStart(lims, t) {
+  let s = lims[0].start;
+  for (const l of lims) if (l.start <= t) s = l.start;
+  return s;
+}
+
 // Only the polls where the value moved are stored, with the last poll before each move: two neighbours of the
 // same value are the ends of a stretch where usage stood still. For the streaks and the projection that stretch
 // gets a sample every 10 minutes, so they read time and not the number of stored points.
@@ -66,41 +88,49 @@ function filled(pts) {
 
 // Mean distance from the ideal line over time, along the line the chart draws through the samples, so it does
 // not depend on how many of them are stored. Between two samples the distance is linear; where it changes sign
-// the two triangles are summed.
+// the two triangles are summed. Each limit is read against its own line; the fall between two is left out.
 function meanDeviation(pts, end, start) {
-  let area = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const a = deviation(pts[i - 1], end, start), b = deviation(pts[i], end, start);
-    const mean = a * b < 0 ? (a * a + b * b) / (2 * (Math.abs(a) + Math.abs(b))) : (Math.abs(a) + Math.abs(b)) / 2;
-    area += mean * (pts[i].t - pts[i - 1].t);
+  let area = 0, span = 0;
+  for (const lim of limits(pts, start)) {
+    const ps = lim.pts;
+    for (let i = 1; i < ps.length; i++) {
+      const a = deviation(ps[i - 1], end, lim.start), b = deviation(ps[i], end, lim.start);
+      const mean = a * b < 0 ? (a * a + b * b) / (2 * (Math.abs(a) + Math.abs(b))) : (Math.abs(a) + Math.abs(b)) / 2;
+      area += mean * (ps[i].t - ps[i - 1].t);
+    }
+    span += ps[ps.length - 1].t - ps[0].t;
   }
-  const span = pts[pts.length - 1].t - pts[0].t;
   return span > 0 ? area / span : Math.abs(deviation(pts[0], end, start));
 }
 
-// Longest and current run of consecutive in-zone samples, in ms. pts sorted by t.
+// Longest and current run of consecutive in-zone samples, in ms, each read against its limit's line. pts sorted by t.
 function streaks(pts, end, start) {
   let best = 0, runStart = null, current = 0;
-  for (const p of filled(pts)) {
-    if (sampleZone(p, end, start) === 'zone') {
-      if (runStart === null) runStart = p.t;
-      current = p.t - runStart;
-      best = Math.max(best, current);
-    } else {
-      runStart = null;
-      current = 0;
+  for (const lim of limits(pts, start)) {
+    for (const p of filled(lim.pts)) {
+      if (sampleZone(p, end, lim.start) === 'zone') {
+        if (runStart === null) runStart = p.t;
+        current = p.t - runStart;
+        best = Math.max(best, current);
+      } else {
+        runStart = null;
+        current = 0;
+      }
     }
   }
   return { current: runStart === null ? null : current, best };
 }
 
-// Linear projection to the reset from the last 24 h of samples (or the period start when that is too short).
+// Linear projection of the current limit (see limits) to the reset from its last 24 h of samples (or its start when
+// that is too short).
 function projection(pts, end, start = end - PACE_WEEK) {
   if (!pts.length) return null;
-  const last = pts[pts.length - 1];
-  const reached = pts.find(p => p.pct >= 100);
-  let first = filled(pts).find(p => p.t >= last.t - 24 * PACE_HOUR);
-  if (!first || last.t - first.t < 3 * PACE_HOUR) first = { t: start, pct: 0 };
+  const lims = limits(pts, start);
+  const { start: from, pts: ps } = lims[lims.length - 1];
+  const last = ps[ps.length - 1];
+  const reached = ps.find(p => p.pct >= 100);
+  let first = filled(ps).find(p => p.t >= last.t - 24 * PACE_HOUR);
+  if (!first || last.t - first.t < 3 * PACE_HOUR) first = { t: from, pct: 0 };
   const span = last.t - first.t;
   const rate = span > 0 ? Math.max(0, (last.pct - first.pct) / span) : 0;
   const projected = last.pct + rate * Math.max(0, end - last.t);
@@ -115,23 +145,39 @@ function projection(pts, end, start = end - PACE_WEEK) {
 // work, so a blocked stretch costs half its share. S 95+, A 90+, B 75+, C 50+, else D. S also needs no block
 // before the finish window (every window runs to the reset).
 // Distance from the line is reported but does not affect the rank.
+// Several limits in one period (see limits): the usage is the share of all of them used, final being the current
+// one's, and an earlier limit blocked from its 100% to its early reset, unless that took under PACE_RESET_GRACE
+// (a reset taken on reaching the limit).
 const PACE_RANK_S = 95;
 const PACE_BLOCK_WEIGHT = 0.5;
+const PACE_RESET_GRACE = 10 * 6e4;
 function weekResult(pts, end, now, start) {
   if (!pts.length) return null;
   const live = end > now;
   const avgDev = meanDeviation(pts, end, start);
   const proj = projection(pts, end, start);
   const hitAt = proj.hitAt && proj.hitAt <= end ? proj.hitAt : null;
-  const final = hitAt ? 100 : Math.min(100, live ? proj.projected : pts[pts.length - 1].pct);
+  const final = hitAt ? 100 : Math.min(100, live ? proj.projected : proj.from.pct);
   const earlyMs = hitAt ? end - hitAt : 0;
   const fin = finishWindow(end, start);
-  const blockedMs = hitAt ? Math.max(0, fin.start - hitAt) : 0;
-  const score = final - PACE_BLOCK_WEIGHT * blockedMs / (end - (start ?? end - PACE_WEEK)) * 100;
+  let blockedMs = hitAt ? Math.max(0, fin.start - hitAt) : 0;
+  // earlier = percent used of the limits before the current one; resets = when each early reset was seen, and at what
+  const lims = limits(pts, start);
+  let earlier = 0;
+  const resets = [];
+  for (let i = 0; i + 1 < lims.length; i++) {
+    const ps = lims[i].pts, next = lims[i + 1].start;
+    earlier += Math.min(100, ps[ps.length - 1].pct);
+    resets.push({ t: next, from: ps[ps.length - 1].pct, to: lims[i + 1].pts[0].pct });
+    const full = ps.find(p => p.pct >= 100);
+    if (full && next - full.t >= PACE_RESET_GRACE) blockedMs += Math.max(0, Math.min(next, fin.start) - full.t);
+  }
+  const usage = (earlier + final) / lims.length;
+  const score = usage - PACE_BLOCK_WEIGHT * blockedMs / (end - (start ?? end - PACE_WEEK)) * 100;
   let grade = score >= PACE_RANK_S ? 'S' : score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 50 ? 'C' : 'D';
   if (grade === 'S' && blockedMs > 0) grade = 'A';
   const onFinalDay = !!hitAt && hitAt >= fin.start && hitAt <= fin.end;
-  return { grade, score, final, avgDev, hitAt, earlyMs, blockedMs, onFinalDay, live };
+  return { grade, score, final, avgDev, hitAt, earlyMs, blockedMs, onFinalDay, live, limits: lims.length, earlier, resets };
 }
 
 // Burn: how fast usage climbs. Weekly usage moves in whole percent, so it is read between the moves. A move is
@@ -166,26 +212,30 @@ function burnSession(pts, now) {
     if (gap >= longest) { longest = gap; i = j; }
   }
   const from = timed(ms[i]) ? ms[i].before : ms[i].p;
-  const used = pts[pts.length - 1].pct - from.pct;
+  // the climbs since from, so a session across an early reset (see limits) counts both sides of it
+  const used = ms.reduce((sum, m) => sum + (m.before.t >= from.t ? m.p.pct - m.before.pct : 0), 0);
   return used > 0 ? { from: from.t, used, perMin: used / Math.max(6e4, now - from.t) * 6e4 } : null;
 }
 
-// The fastest climb between two neighbouring moves that are both timed to the minute, in percent per minute,
-// with the time it reached the second one. The latest wins a tie.
+// The fastest climb between two neighbouring moves of one limit (see limits) that are both timed to the minute, in
+// percent per minute, with the time it reached the second one. The latest wins a tie.
 function burnPeak(pts) {
-  const ms = rises(pts);
   let best = null;
-  for (let i = 1; i < ms.length; i++) {
-    if (!timed(ms[i - 1]) || !timed(ms[i])) continue;
-    const perMin = (ms[i].p.pct - ms[i - 1].p.pct) / (ms[i].p.t - ms[i - 1].p.t) * 6e4;
-    if (!best || perMin >= best.perMin) best = { perMin, from: ms[i - 1].p.t, at: ms[i].p.t };
+  for (const lim of limits(pts)) {
+    const ms = rises(lim.pts);
+    for (let i = 1; i < ms.length; i++) {
+      if (!timed(ms[i - 1]) || !timed(ms[i])) continue;
+      const perMin = (ms[i].p.pct - ms[i - 1].p.pct) / (ms[i].p.t - ms[i - 1].p.t) * 6e4;
+      if (!best || perMin >= best.perMin) best = { perMin, from: ms[i - 1].p.t, at: ms[i].p.t };
+    }
   }
   return best;
 }
 
 // What 1% of a weekly limit is worth at API list prices, measured from imported Claude Code dollars per minute
 // (sorted [minute, usd] pairs, see minuteTotals) against one period of a weekly series: each stretch between two
-// neighbouring moves inside the imported span gives the dollars logged in it for the percent it climbed. Logs miss
+// neighbouring moves of one limit (see limits) inside the imported span gives the dollars logged in it for the
+// percent it climbed. Logs miss
 // other computers, chats and deleted transcripts, so a stretch with nothing logged is a gap; the figure counts only
 // when stretches with logged calls hold at least LOG_COVER of the climb and at least LOG_MIN_PCT points. Else null.
 const LOG_COVER = 0.8;
@@ -203,13 +253,15 @@ function measuredRate(pts, minutes, span) {
     return cum[lo];
   };
   let climbed = 0, covered = 0, usd = 0;
-  const ms = rises(pts);
-  for (let i = 1; i < ms.length; i++) {
-    const a = ms[i - 1].p, b = ms[i].p;
-    if (a.t < span.from || b.t > span.to) continue;
-    const spent = upTo(b.t) - upTo(a.t);
-    climbed += b.pct - a.pct;
-    if (spent > 0) { covered += b.pct - a.pct; usd += spent; }
+  for (const lim of limits(pts)) {
+    const ms = rises(lim.pts);
+    for (let i = 1; i < ms.length; i++) {
+      const a = ms[i - 1].p, b = ms[i].p;
+      if (a.t < span.from || b.t > span.to) continue;
+      const spent = upTo(b.t) - upTo(a.t);
+      climbed += b.pct - a.pct;
+      if (spent > 0) { covered += b.pct - a.pct; usd += spent; }
+    }
   }
   return covered >= LOG_MIN_PCT && covered >= LOG_COVER * climbed ? { usdPerPct: usd / covered, covered, climbed } : null;
 }
@@ -226,7 +278,7 @@ function formatMoney(v, currency = 'USD') {
 const periodStart = p => (Number.isFinite(p.start) ? p.start : p.reset - PACE_WEEK);
 
 if (typeof module !== 'undefined') {
-  module.exports = { PACE_WEEK, PACE_HOUR, PACE_ZONE_MS, PACE_FINAL_DAY, idealAt, deviation, zonePts, zoneOf, finishWindow, sampleZone,
-                     filled, meanDeviation, streaks, projection, weekResult, burnSession, burnPeak, measuredRate, periodStart,
-                     formatMoney };
+  module.exports = { PACE_WEEK, PACE_HOUR, PACE_ZONE_MS, PACE_FINAL_DAY, PACE_RESET_GRACE, idealAt, deviation, zonePts, zoneOf,
+                     finishWindow, sampleZone, limits, limitStart, filled, meanDeviation, streaks, projection, weekResult,
+                     burnSession, burnPeak, measuredRate, periodStart, formatMoney };
 }

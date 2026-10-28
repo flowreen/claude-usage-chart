@@ -197,6 +197,14 @@ const poll = () => new Promise(res => listeners.message('poll', {}, res));
   await new Promise(r => setTimeout(r, 10));
   assert.strictEqual(badge.text, '-27%');
   assert.strictEqual(badge.color, '#3553b5');
+  // an early reset a day ago (100% -> 0%): 30% is read against the new limit's line, 1 of its 4 days = 25%
+  const a = store.points.find(p => p.org === 'org-a');
+  store.points.push({ ...a, t: a.t - DAY - 6e4, pct: 100 }, { ...a, t: a.t - DAY, pct: 0 });
+  await listeners.changed({ selectedOrg: { newValue: 'org-a' } });
+  await new Promise(r => setTimeout(r, 10));
+  assert.strictEqual(badge.text, '+5%');
+  assert.strictEqual(badge.color, '#d99a00');
+  store.points.splice(-2);
 
   // one point per minute per series, driven by a fake clock inside background.js
   const minuteStart = Math.floor(Date.now() / 6e4) * 6e4;
