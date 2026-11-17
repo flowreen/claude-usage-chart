@@ -26,7 +26,6 @@ async function load() {
   const stored = await chrome.storage.local.get(['points', 'held', 'status', 'selectedOrg', 'hiddenOrgs', 'logMinutes', 'logSpan', 'logState', ...ORG_MAPS]);
   state.logMinutes = Array.isArray(stored.logMinutes) ? stored.logMinutes : [];
   state.logSpan = stored.logSpan || null;
-  await syncButton(stored.logState); // before render: the first-run card shows the sync link only when it is needed
   // Every point carries its account (org); anything without one is ignored.
   state.points = (stored.points || []).filter(p => p && p.org);
   // The newest sample of each series while its value stands still: drawn as the last point, not stored as one.
@@ -36,6 +35,7 @@ async function load() {
   if (state.org === null && stored.selectedOrg) state.org = stored.selectedOrg;
   state.status = stored.status || null; // the last poll's result, for the first-run card (welcome)
   showStatus(stored.status);
+  await syncButton(stored.logState); // before render: the first-run card shows the sync link only when it is needed
   render();
   markSignedOut();
 }
@@ -836,8 +836,8 @@ $('file').onchange = async e => {
 // with one click, a moved or deleted folder is picked again. With nothing charted yet the first-run card links to it
 // instead (welcome).
 async function syncButton(logState) {
-  const dir = await logHandle().catch(() => null);
-  const perm = dir ? await dir.queryPermission({ mode: 'read' }).catch(() => 'error') : null;
+  const dir = await answered(logHandle()).catch(() => null);
+  const perm = dir ? await answered(dir.queryPermission({ mode: 'read' })).catch(() => 'error') : null;
   // Why the sync needs a click: no folder yet, Chrome's permission to give again (a picked folder stays readable
   // only while a chart tab is open; asked again later, Chrome may also offer "Allow on every visit", which lasts), or a
   // folder that can't be read (moved, deleted, refused).
@@ -877,8 +877,8 @@ $('sync').dataset.title = `Pick (or drop on this page) ${CLAUDE_HOME}, the one i
 // the button stays); the folder picker opens only with no folder yet or one that can't be read.
 $('sync').onclick = async () => {
   try {
-    const old = await logHandle().catch(() => null);
-    const perm = old ? await old.queryPermission({ mode: 'read' }).catch(() => 'error') : null;
+    const old = await answered(logHandle()).catch(() => null);
+    const perm = old ? await answered(old.queryPermission({ mode: 'read' })).catch(() => 'error') : null;
     if (perm === 'prompt') {
       if (await old.requestPermission({ mode: 'read' }) === 'granted') showStatus(await chrome.runtime.sendMessage({ type: 'logs' }));
       return;

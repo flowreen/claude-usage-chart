@@ -260,11 +260,19 @@ function syncLogs(reset = false) {
 }
 async function syncLogsOnce(reset) {
   const now = Date.now();
-  const dir = await logHandle().catch(() => null);
+  let dir;
+  try {
+    dir = await answered(logHandle());
+  } catch (e) {
+    if (!e.unanswered) return null;
+    const logState = { t: now, ok: false, msg: `Claude folder can't be read: ${e.message}` };
+    await chrome.storage.local.set({ logState });
+    return logState;
+  }
   if (!dir) return null;
   let logState;
   try {
-    if (await dir.queryPermission({ mode: 'read' }) !== 'granted') throw new Error('Chrome needs your permission to read it again');
+    if (await answered(dir.queryPermission({ mode: 'read' })) !== 'granted') throw new Error('Chrome needs your permission to read it again');
     const stored = await chrome.storage.local.get(['logMinutes', 'logScan', 'logSpan']);
     const r = await scanLogs(dir, reset ? null : stored.logScan || null, now);
     const logMinutes = r.full ? mergeMinutes(stored.logMinutes, r.minutes) : addMinutes(stored.logMinutes, r.minutes);

@@ -241,7 +241,19 @@ async function logHandle(h) {
   }
 }
 
+// A stored folder handle's calls can stay unanswered after a Chrome update. Waiting on one would keep the chart page
+// from loading its data and the background sync from ever reporting, so each such call gets a time limit; a call that
+// runs out rejects with `unanswered` set. Two such waits stay inside the few seconds a click lets the folder picker open.
+const HANDLE_WAIT_MS = 2000;
+function answered(p, ms = HANDLE_WAIT_MS) {
+  let timer;
+  const late = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(Object.assign(new Error('Chrome did not answer'), { unanswered: true })), ms);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 if (typeof module !== 'undefined') {
   module.exports = { parseWeeklyUsage, parseMonthlySpend, accountLabel, planLabel, mergePoints, logCallCost, readTranscript,
-                     logFiles, scanLogs, mergeMinutes, addMinutes, LOG_MARGIN };
+                     logFiles, scanLogs, mergeMinutes, addMinutes, answered, LOG_MARGIN };
 }
